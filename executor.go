@@ -11,28 +11,40 @@ import (
 )
 
 type Executor interface {
-  Run(string)
+  Run()
 }
+
 type CommandExecutor struct {
-  Commands  []string
-  Output    chan string
+  Commands    []string
+  ComChannel  *ExecutorCom
 }
 
 type ScriptExecutor struct {
-  FileSize    int64
-  FileReader  io.Reader
-  FileNameTmp string
-  Output      chan string
+  FileSize      int64
+  FileReader    io.Reader
+  FileNameTmp   string
+  ComChannel    *ExecutorCom
 }
 
-func NewCommandExecutor(cmds []string, ch chan<- string) (*CommandExecutor) {
+type ExecutorCom struct {
+  Input   chan string
+  Output  chan ExecutorResponse
+}
+
+type ExecutorResponse struct {
+  Id      Int
+  Host    string
+  Output  string
+}
+
+func NewCommandExecutor(cmds []string, com *ExecutorCom) (*CommandExecutor) {
   return &CommandExecutor{
-    Commands: cmds,
-    Output:   ch,
+    Commands:     cmds,
+    ComChannel:   com,
   }
 }
 
-func NewScriptExecutor(file string, ch chan<- string) (*ScriptExecutor, error) {
+func NewScriptExecutor(file string, com *ExecutorCom) (*ScriptExecutor, error) {
   f, err := os.Open(file)
   if err != nil {
     return err
@@ -50,32 +62,36 @@ func NewScriptExecutor(file string, ch chan<- string) (*ScriptExecutor, error) {
     FileSize:     s.Size(),
     FileReader:   f,
     FileNameTmp:  string(h),
-    Output:       ch,
+    ComChannel:   com,
   }
 }
 
-func (exec *CommandExecutor) Run(host string) {
+func (exec *CommandExecutor) Run() {
 
-  client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, ExecContext.SSHPort), ExecContext.SSHClientConfig)
-  if err != nil {
-    exec.Output <- fmt.Sprintf("host:%s\nFailed to connect: ", host, err.Error())
-  }
+  for host := range exec.ExecutorCom.Input {
+    client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, ExecContext.SSHPort), ExecContext.SSHClientConfig)
+    if err != nil {
+      exec.Output <- &ExecutorResponse{
+        Id:
+      }
+    }
 
-  for _, cmd := range ExecContext.Commands {
-    session, err := client.NewSession()
-    if err != nil {
-      exec.Output <- fmt.Sprintf("host:%s\nFailed to create session: %s\n", host, err.Error())
+    for _, cmd := range ExecContext.Commands {
+      session, err := client.NewSession()
+      if err != nil {
+        exec.Output <- fmt.Sprintf("host:%s\nFailed to create session: %s\n", host, err.Error())
+      }
+      defer session.Close()
+      cmdOut, err := session.CombinedOutput(cmd)
+      if err != nil {
+          exec.Output <- fmt.Sprintf("host:%s\nFailed to run cmd (%s): %s", host, cmd, err.Error())
+      }
+      exec.Output <- fmt.Sprintf("host:%s\n%s", cmdOut)
     }
-    defer session.Close()
-    cmdOut, err := session.CombinedOutput(cmd)
-    if err != nil {
-        exec.Output <- fmt.Sprintf("host:%s\nFailed to run cmd (%s): %s", host, cmd, err.Error())
-    }
-    exec.Output <- fmt.Sprintf("host:%s\n%s", cmdOut)
   }
 }
 
-func (exec *ScriptExecutor) Run(host string) {
+func (exec *ScriptExecutor) Run() {
   remoteDir := "/tmp"
   err := scp.Copy(exec.FileSize, os.FileMode(0755), exec.FileNameTmp, exec.FileReader, remoteDir, ExecContext.SSHClientConfig)
   if err != nil {

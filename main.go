@@ -10,16 +10,28 @@ import (
   "os"
   "log"
   "syscall"
+  "runtime"
 )
 
 type ExecutionContext struct {
   Handler           Executor
+  NumProcs          int
   ServerIp          string
   SSHPort           int
   SSHClientConfig   *ssh.ClientConfig
   Sudo              bool
   Verbose           bool
   ComChannel        chan string
+}
+
+/*
+  Custom type to represent a list of servers.
+  This is intended to get more complex as I add the ability to provide
+  regexes, etc.
+*/
+type ServerList []string
+func NewServerList(arg string) (*ServerList, error) {
+  return strings.Split(arg, ","), nil
 }
 
 var (
@@ -30,6 +42,7 @@ var (
  flagVerbose bool
  flagScript string
  flagPort int
+ flagProcs int
  //flagEnv string
  ExecContext *ExecutionContext
 )
@@ -38,19 +51,19 @@ func main() {
   load()
   fmt.Printf("%+v\n", ExecContext)
 
-  worker := &Worker{ServerIp: ExecContext.ServerIp}
-  worker.Run()
+  launch()
 }
 
 func load() {
 
   flag.BoolVarP(&flagHelp, "help", "h", false, "Print Help / Usage")
-  flag.StringVarP(&flagUser, "user", "u", "", "Username for SSH connection")
-  flag.StringVarP(&flagIdentityFile, "keyfile", "i", "", "Private Key file for SSH connection")
-  flag.BoolVarP(&flagSudo, "sudo", "s", false, "Use sudo for command execution")
-  flag.BoolVarP(&flagVerbose, "verbose", "v", false, "Display verbose output")
-  flag.StringVar(&flagScript, "script", "", "Path to script file to run on remote machines")
-  flag.IntVarP(&flagPort, "port", "p", 22, "Port for SSH connection")
+  flag.StringVarP(&flagUser, "user", "u", os.Getenv("USER"), "Username for SSH connection. Required only if the SSH user differs from the ENV(\"USER\") value or if it is empty.")
+  flag.StringVarP(&flagIdentityFile, "keyfile", "i", "", "Private Key file for SSH connection. Required only if an SSH Key other than ~/.ssh/id_rsa is to be used. Password fallback is enabled.")
+  flag.BoolVarP(&flagSudo, "sudo", "s", false, "Use sudo for command execution. Optional.")
+  flag.BoolVarP(&flagVerbose, "verbose", "v", false, "Display verbose output. Optional.")
+  flag.StringVar(&flagScript, "script", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
+  flag.IntVarP(&flagPort, "port", "p", 22, "Port for SSH connection. Optional.")
+  flag.IntVar(&flagProcs, "procs", runtime.NumCPU(), "Number of goroutines to use. Optional. This value reflects the number of goroutines concurrently executing SSH Sessions, by default the NumCPUs is used.")
   flag.Parse()
 
   if flagHelp {
@@ -62,17 +75,25 @@ func load() {
   }
   if flag.Args() < 1 {
     usage(2, "At least one argument (host) is required.")
+  } else {
+    servers, err := NewServerList(flag.Arg(0))
+    if err != nil {
+      usage(3, "Server list could not be parsed.")
+    }
   }
 
-  comChannel := make(chan string)
+  executorComChannel := &ExecutorCom{
+    Input:    make(chan string, 100)
+    Output:   make(chan ExecutorResponse, 100)
+  }
 
   if flagScript != "" {
-    executor, err := NewScriptExecutor(flagScript, comChannel)
+    executor, err := NewScriptExecutor(flagScript, executorComChannel)
     if err != nil {
       log.Fatal("Could not create ScriptExecutor: ", err)
     }
   } else if flag.Args()[1:] > 0 {
-    executor := NewCommandExecutor(flag.Args()[1:], comChannel)
+    executor := NewCommandExecutor(flag.Args()[1:], executorComChannel)
   } else {
     usage(3, "No script or commands provided.")
   }
@@ -102,12 +123,13 @@ func load() {
   // Setting our full ExecutionContext
   ExecContext = &ExecutionContext{
     Handler:          executor,
-    ServerIp:         flag.Arg(0),
+    NumProcs:         flagProcs,
+    Servers:          servers,
     SSHPort:          flagPort,
     SSHClientConfig:  sshClientConfig,
     Sudo:             flagSudo,
     Verbose:          flagVerbose,
-    ComChannel:       comChannel,
+    ComChannel:       executorComChannel,
   }
 
 }
