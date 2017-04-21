@@ -4,6 +4,7 @@ import (
   flag "github.com/spf13/pflag"
   "golang.org/x/crypto/ssh/terminal"
   "golang.org/x/crypto/ssh"
+  "sync"
   "io/ioutil"
   "strings"
   "fmt"
@@ -13,15 +14,15 @@ import (
   "runtime"
 )
 
-type ExecutionContext struct {
+type ExecutionConfig struct {
   Handler           Executor
   NumProcs          int
-  ServerIp          string
+  ServerList        ServerList
   SSHPort           int
   SSHClientConfig   *ssh.ClientConfig
   Sudo              bool
   Verbose           bool
-  ComChannel        chan string
+  ComChannel        *ExecutorCom
 }
 
 /*
@@ -30,9 +31,12 @@ type ExecutionContext struct {
   regexes, etc.
 */
 type ServerList []string
-func NewServerList(arg string) (*ServerList, error) {
+func NewServerList(arg string) (ServerList, error) {
   return strings.Split(arg, ","), nil
 }
+
+const TERM_CYAN = "\x1b[36;1m"
+const TERM_GREEN = "\x1b[32;1m"
 
 var (
  flagHelp bool
@@ -44,17 +48,60 @@ var (
  flagPort int
  flagProcs int
  //flagEnv string
- ExecContext *ExecutionContext
+ Config *ExecutionConfig
 )
 
 func main() {
   load()
-  fmt.Printf("%+v\n", ExecContext)
+  fmt.Printf("%+v\n", Config)
 
-  launch()
+  execute()
+}
+
+func execute() {
+
+  results := make(map[string]string)
+  var wg sync.WaitGroup
+  var threads = Config.NumProcs
+  if len(Config.ServerList) < Config.NumProcs {
+    threads = len(Config.ServerList)
+  }
+  if Config.Verbose {
+    fmt.Printf("Running with %d goroutines\n", threads)
+  }
+  wg.Add(threads)
+  for i := 0; i < threads; i++ {
+    go Config.Handler.Run(wg)
+  }
+
+  go func() {
+    for _, host := range Config.ServerList {
+      Config.ComChannel.Input <- host
+    }
+    close(Config.ComChannel.Input)
+  }()
+
+  // Really don't know that this is the idiomatic way to do this.
+  for i := 0; i < len(Config.ServerList); i++ {
+    select {
+    case result := <- Config.ComChannel.Output:
+      results[result.Host] = result.Output
+      //fmt.Println(result)
+    }
+  }
+  //wg.Wait()
+  for key, value := range results {
+    fmt.Printf("Host: %s%s\n%s%s\n--------------------------------\n", TERM_GREEN, key, TERM_CYAN, value)
+  }
 }
 
 func load() {
+
+  var (
+    executor Executor
+    servers ServerList
+    err error
+  )
 
   flag.BoolVarP(&flagHelp, "help", "h", false, "Print Help / Usage")
   flag.StringVarP(&flagUser, "user", "u", os.Getenv("USER"), "Username for SSH connection. Required only if the SSH user differs from the ENV(\"USER\") value or if it is empty.")
@@ -73,27 +120,27 @@ func load() {
   if flagUser == "" {
     usage(1, "Username required.")
   }
-  if flag.Args() < 1 {
+  if len(flag.Args()) < 1 {
     usage(2, "At least one argument (host) is required.")
   } else {
-    servers, err := NewServerList(flag.Arg(0))
+    servers, err = NewServerList(flag.Arg(0))
     if err != nil {
       usage(3, "Server list could not be parsed.")
     }
   }
 
   executorComChannel := &ExecutorCom{
-    Input:    make(chan string, 100)
-    Output:   make(chan ExecutorResponse, 100)
+    Input:    make(chan string, 100),
+    Output:   make(chan ExecutorResponse, 100),
   }
 
   if flagScript != "" {
-    executor, err := NewScriptExecutor(flagScript, executorComChannel)
+    executor, err = NewScriptExecutor(flagScript, executorComChannel)
     if err != nil {
       log.Fatal("Could not create ScriptExecutor: ", err)
     }
-  } else if flag.Args()[1:] > 0 {
-    executor := NewCommandExecutor(flag.Args()[1:], executorComChannel)
+  } else if len(flag.Args()[1:]) > 0 {
+    executor = NewCommandExecutor(flag.Args()[1:], executorComChannel)
   } else {
     usage(3, "No script or commands provided.")
   }
@@ -120,11 +167,11 @@ func load() {
     }
   }
 
-  // Setting our full ExecutionContext
-  ExecContext = &ExecutionContext{
+  // Setting our full ExecutionConfig
+  Config = &ExecutionConfig{
     Handler:          executor,
     NumProcs:         flagProcs,
-    Servers:          servers,
+    ServerList:       servers,
     SSHPort:          flagPort,
     SSHClientConfig:  sshClientConfig,
     Sudo:             flagSudo,
@@ -148,6 +195,7 @@ func getPassword() (func() (string, error)) {
   return func() (string, error) {
     fmt.Print("Password: ")
     password, err := terminal.ReadPassword(int(syscall.Stdin))
+    fmt.Println()
     if err != nil {
       return "", err
     }
@@ -184,7 +232,7 @@ func getScriptSrc(scriptPath string) ([]byte) {
   return scriptSrc
 }
 
-func (ec *ExecutionContext) Print() {
+func (ec *ExecutionConfig) Print() {
   // Print the Exection Context in a readable format
   //fmt.Printf("ExectionContext:\n")
   //fmt.Printf("ServerIp: %s\n", ec.ServerIp)
