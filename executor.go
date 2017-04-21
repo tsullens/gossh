@@ -8,6 +8,8 @@ import (
   "sync"
   "fmt"
   "io"
+  "io/ioutil"
+  "bytes"
   "os"
 )
 
@@ -53,10 +55,14 @@ func NewCommandExecutor(cmds []string, com *ExecutorCom) (*CommandExecutor) {
 
 func NewScriptExecutor(file string, com *ExecutorCom) (*ScriptExecutor, error) {
   f, err := os.Open(file)
+  defer f.Close()
   if err != nil {
     return nil, err
   }
-  defer f.Close()
+  buf, err := ioutil.ReadAll(f)
+  if err != nil {
+    return nil, err
+  }
   s, err := f.Stat()
   if err != nil {
     return nil, err
@@ -65,7 +71,7 @@ func NewScriptExecutor(file string, com *ExecutorCom) (*ScriptExecutor, error) {
 
   return &ScriptExecutor{
     FileSize:     s.Size(),
-    FileReader:   f,
+    FileReader:   bytes.NewBuffer(buf),
     FileNameTmp:  hex.EncodeToString(fileSum[:]),
     //ComChannel:   com,
     Input:        com.Input,
@@ -93,14 +99,14 @@ func (exec *CommandExecutor) Run(wg sync.WaitGroup) {
       session, err := client.NewSession()
       if err != nil {
         //exec.Output <- fmt.Sprintf("host:%s\nFailed to create session: %s\n", host, err.Error())
-        exec.Output <- executorResponse(host, fmt.Sprintf("Failed to create session: %s\n", host, err.Error()))
+        exec.Output <- executorResponse(host, fmt.Sprintf("Failed to create session: %s\n", err.Error()))
         continue
       }
       defer session.Close()
       cmdOut, err := session.CombinedOutput(cmd)
       if err != nil {
           //exec.Output <- fmt.Sprintf("host:%s\nFailed to run cmd (%s): %s", host, cmd, err.Error())
-          exec.Output <- executorResponse(host, fmt.Sprintf("Failed to run cmd (%s): %s", host, cmd, err.Error()))
+          exec.Output <- executorResponse(host, fmt.Sprintf("Failed to run cmd (%s): %s", cmd, err.Error()))
           continue
       }
       //exec.Output <- fmt.Sprintf("host:%s\n%s", cmdOut)
@@ -111,6 +117,7 @@ func (exec *CommandExecutor) Run(wg sync.WaitGroup) {
 
 func (exec *ScriptExecutor) Run(wg sync.WaitGroup) {
   defer wg.Done()
+
   remoteDir := "/tmp"
   var (
     session *ssh.Session
@@ -123,14 +130,14 @@ func (exec *ScriptExecutor) Run(wg sync.WaitGroup) {
     client, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, Config.SSHPort), Config.SSHClientConfig)
     if err != nil {
       //exec.Output <- fmt.Sprintf("host:%s\nFailed to connect & run script: %s\n", host, err.Error())
-      exec.Output <- executorResponse(host, fmt.Sprintf("Failed to connect & run script: %s\n", host, err.Error()))
+      exec.Output <- executorResponse(host, fmt.Sprintf("Failed to connect & run script: %s\n", err.Error()))
       continue
     }
     // Session for scp
     session, err = client.NewSession()
     if err != nil {
       //exec.Output <- fmt.Sprintf("host:%s\nFailed to create session: %s\n", host, err.Error())
-      exec.Output <- executorResponse(host, fmt.Sprintf("Failed to create session: %s\n", host, err.Error()))
+      exec.Output <- executorResponse(host, fmt.Sprintf("Failed to create session: %s\n", err.Error()))
       continue
     }
     defer session.Close()
@@ -148,13 +155,27 @@ func (exec *ScriptExecutor) Run(wg sync.WaitGroup) {
     session, err = client.NewSession()
     if err != nil {
       //exec.Output <- fmt.Sprintf("host:%s\nFailed to create session: %s\n", host, err.Error())
-      exec.Output <- executorResponse(host, fmt.Sprintf("Failed to create session: %s\n", host, err.Error()))
+      exec.Output <- executorResponse(host, fmt.Sprintf("Failed to create session: %s\n", err.Error()))
       continue
     }
     cmdOut, err = session.CombinedOutput(fmt.Sprintf("%s/%s", remoteDir, exec.FileNameTmp))
     if err != nil {
       //exec.Output <- fmt.Sprintf("host:%s\nFailed to run script: %s\n", host, err.Error())
-      exec.Output <- executorResponse(host, fmt.Sprintf("Failed to run script: %s\n", host, err.Error()))
+      exec.Output <- executorResponse(host, fmt.Sprintf("Failed to run script: %s\n", err.Error()))
+      continue
+    }
+    session.Close()
+    //Session to remove script
+    session, err = client.NewSession()
+    if err != nil {
+      //exec.Output <- fmt.Sprintf("host:%s\nFailed to create session: %s\n", host, err.Error())
+      exec.Output <- executorResponse(host, fmt.Sprintf("Failed to create session: %s\n", err.Error()))
+      continue
+    }
+    cmdOut, err = session.CombinedOutput(fmt.Sprintf("rm -f %s/%s", remoteDir, exec.FileNameTmp))
+    if err != nil {
+      //exec.Output <- fmt.Sprintf("host:%s\nFailed to run script: %s\n", host, err.Error())
+      exec.Output <- executorResponse(host, fmt.Sprintf("Failed to remove script: %s\n", err.Error()))
       continue
     }
     //exec.Output <- fmt.Sprintf("host:%s\n%s", host, string(cmdOut))
