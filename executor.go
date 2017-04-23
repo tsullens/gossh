@@ -96,6 +96,9 @@ func (exec *CommandExecutor) Run(wg sync.WaitGroup) {
     }
 
     for _, cmd := range exec.Commands {
+      if Config.Verbose {
+        fmt.Printf("Attempting command %s on host %s\n", cmd, host)
+      }
       session, err := client.NewSession()
       if err != nil {
         //exec.Output <- fmt.Sprintf("host:%s\nFailed to create session: %s\n", host, err.Error())
@@ -164,6 +167,7 @@ func (exec *ScriptExecutor) Run(wg sync.WaitGroup) {
       exec.Output <- executorResponse(host, fmt.Sprintf("Failed to run script: %s\n", err.Error()))
       continue
     }
+    exec.Output <- executorResponse(host, string(cmdOut))
     session.Close()
     //Session to remove script
     session, err = client.NewSession()

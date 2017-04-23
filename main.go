@@ -60,7 +60,7 @@ func main() {
 
 func execute() {
 
-  results := make(map[string]string)
+  results := make(map[string][]string)
   var wg sync.WaitGroup
   var threads = Config.NumProcs
   if len(Config.ServerList) < Config.NumProcs {
@@ -82,16 +82,20 @@ func execute() {
   }()
 
   // Really don't know that this is the idiomatic way to do this.
+  // Maybe need to think of a better way to handle this whole section of code
   for i := 0; i < len(Config.ServerList); i++ {
     select {
     case result := <- Config.ComChannel.Output:
-      results[result.Host] = result.Output
+      fmt.Println(result.Output)
+      results[result.Host] = append(results[result.Host], result.Output)
       //fmt.Println(result)
     }
   }
   //wg.Wait()
   for key, value := range results {
-    fmt.Printf("Host: %s%s\n%s%s\n--------------------------------\n", TERM_GREEN, key, TERM_CYAN, value)
+    fmt.Printf("Host: %s%s\n", TERM_GREEN, key)
+    fmt.Printf("%s%s\n", TERM_CYAN, strings.Join(value, "\n"))
+    fmt.Printf("--------------------------------\n")
   }
 }
 
@@ -161,8 +165,12 @@ func load() {
         ssh.PublicKeys(signer),
       }
     } else { // No id_rsa found, not keyfile arg, use password Auth
+      password, err := passwordPrompt()
+      if err != nil {
+        log.Fatal("Could not read password: ", err)
+      }
       sshClientConfig.Auth = []ssh.AuthMethod{
-        ssh.PasswordCallback(getPassword()),
+        ssh.PasswordCallback(passwordCallback(password)),
       }
     }
   }
@@ -190,16 +198,19 @@ func usage(exitstatus int, msg ...string) {
   os.Exit(exitstatus)
 }
 
+func passwordPrompt() (string, error) {
+  fmt.Print("Password: ")
+  password, err := terminal.ReadPassword(int(syscall.Stdin))
+  fmt.Println()
+  if err != nil {
+    return "", err
+  }
+  return strings.TrimSpace(string(password)), nil
+}
 // Callback Method: returns a func to be used in a Callback.
-func getPassword() (func() (string, error)) {
+func passwordCallback(password string) (func() (string, error)) {
   return func() (string, error) {
-    fmt.Print("Password: ")
-    password, err := terminal.ReadPassword(int(syscall.Stdin))
-    fmt.Println()
-    if err != nil {
-      return "", err
-    }
-    return strings.TrimSpace(string(password)), nil
+    return password, nil
   }
 }
 
