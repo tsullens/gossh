@@ -35,8 +35,11 @@ func NewServerList(arg string) (ServerList, error) {
   return strings.Split(arg, ","), nil
 }
 
-const TERM_CYAN = "\x1b[36;1m"
-const TERM_GREEN = "\x1b[32;1m"
+const VERSION = "0.0.1"
+const TERM_CYAN = "\x1b[0;36m"
+const TERM_GREEN = "\x1b[0;32m"
+const TERM_YELLOW = "\x1b[0;33m"
+const TERM_CLEAR = "\033[0m"
 
 var (
  flagHelp bool
@@ -47,20 +50,21 @@ var (
  flagScript string
  flagPort int
  flagProcs int
+ flagVersion bool
  //flagEnv string
  Config *ExecutionConfig
 )
 
 func main() {
   load()
-  fmt.Printf("%+v\n", Config)
+  //fmt.Printf("%+v\n", Config)
 
   execute()
 }
 
 func execute() {
 
-  results := make(map[string][]string)
+  var results []ExecutorResponse
   var wg sync.WaitGroup
   var threads = Config.NumProcs
   if len(Config.ServerList) < Config.NumProcs {
@@ -76,25 +80,23 @@ func execute() {
 
   go func() {
     for _, host := range Config.ServerList {
-      Config.ComChannel.Input <- host
+      Config.ComChannel.JobChannel <- host
     }
-    close(Config.ComChannel.Input)
+    close(Config.ComChannel.JobChannel)
   }()
 
   // Really don't know that this is the idiomatic way to do this.
   // Maybe need to think of a better way to handle this whole section of code
   for i := 0; i < len(Config.ServerList); i++ {
     select {
-    case result := <- Config.ComChannel.Output:
-      fmt.Println(result.Output)
-      results[result.Host] = append(results[result.Host], result.Output)
-      //fmt.Println(result)
+    case result := <- Config.ComChannel.ResponseChannel:
+      results = append(results, result)
     }
   }
   //wg.Wait()
-  for key, value := range results {
-    fmt.Printf("Host: %s%s\n", TERM_GREEN, key)
-    fmt.Printf("%s%s\n", TERM_CYAN, strings.Join(value, "\n"))
+  for _, result := range results {
+    fmt.Printf("Host: %s%s\n", TERM_GREEN, result.Host)
+    fmt.Printf("%s\n", result.ResponseData)
     fmt.Printf("--------------------------------\n")
   }
 }
@@ -112,13 +114,18 @@ func load() {
   flag.StringVarP(&flagIdentityFile, "keyfile", "i", "", "Private Key file for SSH connection. Required only if an SSH Key other than ~/.ssh/id_rsa is to be used. Password fallback is enabled.")
   flag.BoolVarP(&flagSudo, "sudo", "s", false, "Use sudo for command execution. Optional.")
   flag.BoolVarP(&flagVerbose, "verbose", "v", false, "Display verbose output. Optional.")
-  flag.StringVar(&flagScript, "script", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
+  flag.StringVarP(&flagScript, "script", "S", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
   flag.IntVarP(&flagPort, "port", "p", 22, "Port for SSH connection. Optional.")
   flag.IntVar(&flagProcs, "procs", runtime.NumCPU(), "Number of goroutines to use. Optional. This value reflects the number of goroutines concurrently executing SSH Sessions, by default the NumCPUs is used.")
+  flag.BoolVarP(&flagVersion, "version", "V", false, "Print version")
   flag.Parse()
 
   if flagHelp {
     usage(0)
+  }
+  if flagVersion {
+    fmt.Println(VERSION)
+    os.Exit(0)
   }
   // Setting our User
   if flagUser == "" {
@@ -134,8 +141,8 @@ func load() {
   }
 
   executorComChannel := &ExecutorCom{
-    Input:    make(chan string, 100),
-    Output:   make(chan ExecutorResponse, 100),
+    JobChannel:        make(chan string, 100),
+    ResponseChannel:   make(chan ExecutorResponse, 100),
   }
 
   if flagScript != "" {
