@@ -1,5 +1,6 @@
 # Valor
 **(not a great name)**
+
 Parallel command / script execution over SSH.
 Given a (comma-delimited) list of servers, will execute over them in parallel.
 Functionality to allow for IP ranges, subnets, possibly more is planned.
