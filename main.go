@@ -43,7 +43,7 @@ func NewServerList(arg string) (ServerList, error) {
   return strings.Split(arg, ","), nil
 }
 
-const VERSION = "0.0.1"
+const VERSION = "0.0.2"
 const TERM_CYAN = "\x1b[0;36m"
 const TERM_GREEN = "\x1b[0;32m"
 const TERM_YELLOW = "\x1b[0;33m"
