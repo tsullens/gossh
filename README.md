@@ -1,5 +1,5 @@
-# Valor
-**(not a great name)**
+# gossh
+oh my (gossh)[https://www.youtube.com/watch?v=WjNssEVlB6M]
 
 Parallel command / script execution over SSH.
 Given a (comma-delimited) list of servers, will execute over them in parallel.

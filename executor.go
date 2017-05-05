@@ -117,19 +117,14 @@ func NewScriptExecutor(arg string, com *ExecutorCom) (*ScriptExecutor, error) {
 
 func (exec *CommandExecutor) Run(wg sync.WaitGroup) {
   defer wg.Done()
-
-  if Config.Verbose {
-    fmt.Printf("Started CommandExecutor goroutine\n")
-  }
-
+  Config.logVerbose("Started CommandExecutor goroutine")
   /*
     We range over "jobs" (hosts) in the JobChannel channel and pull each off to
     run
   */
   for host := range exec.JobChannel {
-    if Config.Verbose {
-      fmt.Printf("Started run of host %s\n", host)
-    }
+    Config.logVerbose(fmt.Sprintf("Started run of host %s", host))
+
     // initiate our response struct
     response := &ExecutorResponse{
       Host: host,
@@ -138,31 +133,38 @@ func (exec *CommandExecutor) Run(wg sync.WaitGroup) {
     client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, Config.SSHPort), Config.SSHClientConfig)
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to connect: %s", err.Error()))
+      exec.ResponseChannel <- *response
       continue
     }
-
+    Config.logVerbose(fmt.Sprintf("Connected to host %s", host))
     /*
       We iterate over all over our commands and execute each of them
     */
     for _, cmd := range exec.Commands {
-      if Config.Verbose {
-        fmt.Printf("Running command %s on host %s\n", cmd, host)
+      if Config.Sudo {
+        cmd = fmt.Sprintf("sudo %s", cmd)
       }
+      Config.logVerbose(fmt.Sprintf("Running command %s on host %s", cmd, host))
+
       session, err := client.NewSession()
       if err != nil {
-        response.addResponseData(fmt.Sprintf("Failed to create session: %s\n", err.Error()))
+        response.addResponseData(fmt.Sprintf("Failed to create session: %s", err.Error()))
+        exec.ResponseChannel <- *response
         continue
       }
       defer session.Close()
+
       cmdOut, err := session.CombinedOutput(cmd)
       if err != nil {
           response.addResponseData(fmt.Sprintf("Failed to run cmd (%s): %s", cmd, err.Error()))
+          exec.ResponseChannel <- *response
           continue
       }
       response.addResponseData(fmt.Sprintf("%s%s%s", TERM_YELLOW, cmd, TERM_CLEAR))
       response.addResponseData(fmt.Sprintf("%s%s%s", TERM_CYAN, string(cmdOut), TERM_CLEAR))
     }
     // Last we send our response (ExecutorResponse) struct to our main routine.
+    Config.logVerbose(fmt.Sprintf("Sending host %s response", host))
     exec.ResponseChannel <- *response
   }
 }
@@ -183,6 +185,9 @@ func (exec *ScriptExecutor) Run(wg sync.WaitGroup) {
   } else {
     scriptCmd = fmt.Sprintf("%s %s/%s", exec.ScriptCmd, remoteDir, exec.FileNameTmp)
   }
+  if Config.Sudo {
+    scriptCmd = fmt.Sprintf("sudo %s", scriptCmd)
+  }
 
   /*
     We range over "jobs" (hosts) in the JobChannel channel and pull each off to
@@ -197,6 +202,7 @@ func (exec *ScriptExecutor) Run(wg sync.WaitGroup) {
     client, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, Config.SSHPort), Config.SSHClientConfig)
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to connect & run script: %s", err.Error()))
+      exec.ResponseChannel <- *response
       continue
     }
     /*
@@ -205,15 +211,15 @@ func (exec *ScriptExecutor) Run(wg sync.WaitGroup) {
     session, err = client.NewSession()
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to create session: %s", err.Error()))
+      exec.ResponseChannel <- *response
       continue
     }
     defer session.Close()
-    if Config.Verbose {
-      fmt.Printf("SSH Session to %s established, copying script: %s\n", host, exec.FileNameTmp)
-    }
+    Config.logVerbose(fmt.Sprintf("SSH Session to %s established, copying script: %s", host, exec.FileNameTmp))
     err = scp.Copy(exec.FileSize, os.FileMode(0755), exec.FileNameTmp, exec.FileReader, remoteDir, session)
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to copy script: %s", err.Error()))
+      exec.ResponseChannel <- *response
       continue
     }
     session.Close()
@@ -224,11 +230,13 @@ func (exec *ScriptExecutor) Run(wg sync.WaitGroup) {
     session, err = client.NewSession()
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to create session: %s", err.Error()))
+      exec.ResponseChannel <- *response
       continue
     }
     cmdOut, err = session.CombinedOutput(scriptCmd)
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to run script: %s", err.Error()))
+      exec.ResponseChannel <- *response
       continue
     }
     response.addResponseData(fmt.Sprintf("%s%s%s", TERM_YELLOW, scriptCmd, TERM_CLEAR))
@@ -241,14 +249,15 @@ func (exec *ScriptExecutor) Run(wg sync.WaitGroup) {
     session, err = client.NewSession()
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to create session: %s", err.Error()))
+      exec.ResponseChannel <- *response
       continue
     }
     cmdOut, err = session.CombinedOutput(fmt.Sprintf("rm -f %s/%s", remoteDir, exec.FileNameTmp))
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to remove script: %s", err.Error()))
+      exec.ResponseChannel <- *response
       continue
     }
-
     // Last we send our response (ExecutorResponse) struct to our main routine.
     exec.ResponseChannel <- *response
   }

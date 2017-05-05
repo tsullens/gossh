@@ -4,6 +4,8 @@ import (
   flag "github.com/spf13/pflag"
   "golang.org/x/crypto/ssh/terminal"
   "golang.org/x/crypto/ssh"
+  "golang.org/x/crypto/ssh/knownhosts"
+  "time"
   "sync"
   "io/ioutil"
   "strings"
@@ -25,6 +27,12 @@ type ExecutionConfig struct {
   ComChannel        *ExecutorCom
 }
 
+func (c *ExecutionConfig) logVerbose(msg string) {
+  if c.Verbose {
+    fmt.Println(msg)
+  }
+}
+
 /*
   Custom type to represent a list of servers.
   This is intended to get more complex as I add the ability to provide
@@ -42,16 +50,6 @@ const TERM_YELLOW = "\x1b[0;33m"
 const TERM_CLEAR = "\033[0m"
 
 var (
- flagHelp bool
- flagUser string
- flagIdentityFile string
- flagSudo bool
- flagVerbose bool
- flagScript string
- flagPort int
- flagProcs int
- flagVersion bool
- //flagEnv string
  Config *ExecutionConfig
 )
 
@@ -95,8 +93,8 @@ func execute() {
   }
   //wg.Wait()
   for _, result := range results {
-    fmt.Printf("Host: %s%s\n", TERM_GREEN, result.Host)
-    fmt.Printf("%s\n", result.ResponseData)
+    fmt.Printf("Host: %s%s%s", TERM_GREEN, result.Host, TERM_CLEAR)
+    fmt.Printf("%s", result.ResponseData)
     fmt.Printf("--------------------------------\n")
   }
 }
@@ -104,14 +102,28 @@ func execute() {
 func load() {
 
   var (
-    executor Executor
-    servers ServerList
-    err error
+    executor             Executor
+    servers              ServerList
+    err                  error
+    hostKeyCallback      ssh.HostKeyCallback
+    flagHelp             bool
+    flagUser             string
+    flagIdentityFile     string
+    flagSudo             bool
+    flagVerbose          bool
+    flagScript           string
+    flagPort             int
+    flagProcs            int
+    flagVersion          bool
+    flagKnownHostsFile   string
+    flagStrictHostCheck  bool
   )
 
   flag.BoolVarP(&flagHelp, "help", "h", false, "Print Help / Usage")
   flag.StringVarP(&flagUser, "user", "u", os.Getenv("USER"), "Username for SSH connection. Required only if the SSH user differs from the ENV(\"USER\") value or if it is empty.")
-  flag.StringVarP(&flagIdentityFile, "keyfile", "i", "", "Private Key file for SSH connection. Required only if an SSH Key other than ~/.ssh/id_rsa is to be used. Password fallback is enabled.")
+  flag.StringVarP(&flagIdentityFile, "IdentityFile", "i", "", "Private Key file for SSH connection. Required only if an SSH Key other than ~/.ssh/id_rsa is to be used. Password fallback is enabled.")
+  flag.StringVar(&flagKnownHostsFile, "KnownHostsFile", fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME")), "Location of known_hosts file.")
+  flag.BoolVar(&flagStrictHostCheck, "NoStrictHostCheck", false, "Disable Host Key Checking. Insecure.")
   flag.BoolVarP(&flagSudo, "sudo", "s", false, "Use sudo for command execution. Optional.")
   flag.BoolVarP(&flagVerbose, "verbose", "v", false, "Display verbose output. Optional.")
   flag.StringVarP(&flagScript, "script", "S", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
@@ -155,11 +167,22 @@ func load() {
   } else {
     usage(3, "No script or commands provided.")
   }
+  // Unless explicity stated via the flag, we should check Host Keys against known_hosts.
+  if flagStrictHostCheck {
+    hostKeyCallback = ssh.InsecureIgnoreHostKey()
+  } else {
+    hostKeyCallback, err = knownhosts.New(fmt.Sprintf(flagKnownHostsFile))
+    if err != nil {
+      log.Fatal("Could not parse known_hosts file: ", err)
+    }
+  }
 
   sshClientConfig := &ssh.ClientConfig{
-    User: flagUser,
-    HostKeyCallback: ssh.InsecureIgnoreHostKey(), // Temporary, should enforce Host Key Checking
+    User:             flagUser,
+    HostKeyCallback:  hostKeyCallback,
+    Timeout:          time.Duration(int64(time.Second * 20)),
   }
+
   // Let's work out our Authentication Method
   if flagIdentityFile != "" { // We've been provided a specific keyfile argument
     sshClientConfig.Auth = []ssh.AuthMethod{
