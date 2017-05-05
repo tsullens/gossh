@@ -94,7 +94,7 @@ func execute() {
   //wg.Wait()
   for _, result := range results {
     fmt.Printf("Host: %s%s%s", TERM_GREEN, result.Host, TERM_CLEAR)
-    fmt.Printf("%s", result.ResponseData)
+    fmt.Printf("%s\n", result.ResponseData)
     fmt.Printf("--------------------------------\n")
   }
 }
