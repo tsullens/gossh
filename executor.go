@@ -5,7 +5,6 @@ import (
   "github.com/tmc/scp"
   "crypto/sha256"
   "encoding/hex"
-  "sync"
   "fmt"
   "io"
   "io/ioutil"
@@ -17,7 +16,7 @@ import (
 )
 
 type Executor interface {
-  Run(wg sync.WaitGroup)
+  Run()
 }
 
 type CommandExecutor struct {
@@ -115,8 +114,7 @@ func NewScriptExecutor(arg string, com *ExecutorCom) (*ScriptExecutor, error) {
   }, nil
 }
 
-func (exec *CommandExecutor) Run(wg sync.WaitGroup) {
-  defer wg.Done()
+func (exec *CommandExecutor) Run() {
   Config.logVerbose("Started CommandExecutor goroutine")
   /*
     We range over "jobs" (hosts) in the JobChannel channel and pull each off to
@@ -169,9 +167,7 @@ func (exec *CommandExecutor) Run(wg sync.WaitGroup) {
   }
 }
 
-func (exec *ScriptExecutor) Run(wg sync.WaitGroup) {
-  defer wg.Done()
-
+func (exec *ScriptExecutor) Run() {
   remoteDir := "/tmp"
   var (
     session *ssh.Session
