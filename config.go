@@ -3,6 +3,7 @@ import (
   flag "github.com/spf13/pflag"
   "golang.org/x/crypto/ssh/terminal"
   "golang.org/x/crypto/ssh"
+  "golang.org/x/crypto/ssh/agent"
   "golang.org/x/crypto/ssh/knownhosts"
   "io/ioutil"
   "runtime"
@@ -12,7 +13,10 @@ import (
   "strings"
   "fmt"
   "time"
+  "net"
 )
+
+var flagSet *flag.FlagSet
 
 type ExecutionConfig struct {
   Handler           Executor
@@ -22,6 +26,8 @@ type ExecutionConfig struct {
   SSHClientConfig   *ssh.ClientConfig
   Sudo              bool
   Verbose           bool
+  SSHAgentForward   bool
+  SSHAgent          agent.Agent
   ComChannel        *ExecutorCom
 }
 /*
@@ -48,47 +54,56 @@ func newExecutionConfig() (*ExecutionConfig) {
     goroutines           int
     err                  error
     hostKeyCallback      ssh.HostKeyCallback
-    flagHelp             bool
-    flagUser             string
-    flagIdentityFile     string
-    flagSudo             bool
-    flagVerbose          bool
-    flagScript           string
-    flagPort             int
-    flagProcs            int
-    flagVersion          bool
-    flagKnownHostsFile   string
-    flagStrictHostCheck  bool
+    helpFlag             bool
+    userFlag             string
+    identityFileFlag     string
+    sudoFlag             bool
+    verboseFlag          bool
+    scriptFlag           string
+    portFlag             int
+    procsFlag            int
+    versionFlag          bool
+    knownHostsFileFlag   string
+    strictHostCheckFlag  bool
+    sshAgentForwardFlag  bool
   )
 
-  flag.BoolVarP(&flagHelp, "help", "h", false, "Print Help / Usage")
-  flag.StringVarP(&flagUser, "user", "u", os.Getenv("USER"), "Username for SSH connection. Required only if the SSH user differs from the ENV(\"USER\") value or if it is empty.")
-  flag.StringVarP(&flagIdentityFile, "IdentityFile", "i", "", "Private Key file for SSH connection. Required only if an SSH Key other than ~/.ssh/id_rsa is to be used. Password fallback is enabled.")
-  flag.StringVar(&flagKnownHostsFile, "KnownHostsFile", fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME")), "Location of known_hosts file.")
-  flag.BoolVar(&flagStrictHostCheck, "NoStrictHostCheck", false, "Disable Host Key Checking. Insecure.")
-  flag.BoolVarP(&flagSudo, "sudo", "s", false, "Use sudo for command execution. Optional.")
-  flag.BoolVarP(&flagVerbose, "verbose", "v", false, "Display verbose output. Optional.")
-  flag.StringVarP(&flagScript, "script", "S", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
-  flag.IntVarP(&flagPort, "port", "p", 22, "Port for SSH connection. Optional.")
-  flag.IntVar(&flagProcs, "procs", runtime.NumCPU(), "Number of goroutines to use. Optional. This value reflects the number of goroutines concurrently executing SSH Sessions, by default the NumCPUs is used.")
-  flag.BoolVarP(&flagVersion, "version", "V", false, "Print version")
-  flag.Parse()
+  flagSet = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+  flagSet.BoolVarP(&helpFlag, "help", "h", false, "Print Help / Usage")
+  flagSet.StringVarP(&userFlag, "user", "u", os.Getenv("USER"), "Username for SSH connection. Required only if the SSH user differs from the ENV(\"USER\") value or if it is empty.")
+  flagSet.StringVarP(&identityFileFlag, "IdentityFile", "i", "", "Private Key file for SSH connection. Required only if an SSH Key other than ~/.ssh/id_rsa is to be used. Password fallback is enabled.")
+  flagSet.BoolVarP(&sudoFlag, "sudo", "s", false, "Use sudo for command execution. Optional.")
+  flagSet.BoolVarP(&verboseFlag, "verbose", "v", false, "Display verbose output. Optional.")
+  flagSet.StringVarP(&scriptFlag, "script", "S", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
+  flagSet.IntVarP(&portFlag, "port", "p", 22, "Port for SSH connection. Optional.")
+  flagSet.IntVar(&procsFlag, "procs", runtime.NumCPU(), "Number of goroutines to use. Optional. This value reflects the number of goroutines concurrently executing SSH Sessions, by default the NumCPUs is used.")
+  flagSet.BoolVarP(&versionFlag, "version", "V", false, "Print version")
+  flagSet.BoolVar(&sshAgentForwardFlag, "A", false, "Forward SSH Key from local ssh-agent.")
+  flagSet.StringVar(&knownHostsFileFlag, "KnownHostsFile", fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME")), "Location of known_hosts file.")
+  flagSet.BoolVar(&strictHostCheckFlag, "NoStrictHostCheck", false, "Disable Host Key Checking. Insecure.")
+  flagSet.MarkHidden("A")
+  flagSet.SortFlags = false
+  flagSet.Parse(os.Args[1:])
 
-  if flagHelp {
+  if sshAgentForwardFlag {
+    fmt.Println("SSH Forwarding is not enabled in this version.")
+  }
+
+  if helpFlag {
     usage(0)
   }
-  if flagVersion {
+  if versionFlag {
     fmt.Println(VERSION)
     os.Exit(0)
   }
   // Setting our User
-  if flagUser == "" {
+  if userFlag == "" {
     usage(1, "Username required.")
   }
-  if len(flag.Args()) < 1 {
+  if len(flagSet.Args()) < 1 {
     usage(2, "At least one argument (host) is required.")
   } else {
-    servers, err = NewServerList(flag.Arg(0))
+    servers, err = NewServerList(flagSet.Arg(0))
     if err != nil {
       usage(3, fmt.Sprintf("Server list could not be parsed: %s", err.Error()))
     }
@@ -96,10 +111,10 @@ func newExecutionConfig() (*ExecutionConfig) {
   /*
     This sets the number of go routines we will use for parallel execution.
     A -1 provided for this flag will have us create an Executor for every server,
-    or if the amount of servers given is lower than our provided or default flagProcs
+    or if the amount of servers given is lower than our provided or default procsFlag
     value, we will limit ourselves so as to not create unnecessary threads.
   */
-  if flagProcs == -1 || len(servers) < flagProcs {
+  if procsFlag == -1 || len(servers) < procsFlag {
     goroutines = len(servers)
   }
 
@@ -108,52 +123,51 @@ func newExecutionConfig() (*ExecutionConfig) {
     ResponseChannel:   make(chan ExecutorResponse, 100),
   }
 
-  if flagScript != "" {
-    executor, err = NewScriptExecutor(flagScript, executorComChannel)
+  if scriptFlag != "" {
+    executor, err = NewScriptExecutor(scriptFlag, executorComChannel)
     if err != nil {
       log.Fatal("Could not create ScriptExecutor: ", err)
     }
-  } else if len(flag.Args()[1:]) > 0 {
-    executor = NewCommandExecutor(flag.Args()[1:], executorComChannel)
+  } else if len(flagSet.Args()[1:]) > 0 {
+    executor = NewCommandExecutor(flagSet.Args()[1:], executorComChannel)
   } else {
     usage(3, "No script or commands provided.")
   }
   // Unless explicity stated via the flag, we should check Host Keys against known_hosts.
-  if flagStrictHostCheck {
+  if strictHostCheckFlag {
     hostKeyCallback = ssh.InsecureIgnoreHostKey()
   } else {
-    hostKeyCallback, err = knownhosts.New(fmt.Sprintf(flagKnownHostsFile))
+    hostKeyCallback, err = knownhosts.New(fmt.Sprintf(knownHostsFileFlag))
     if err != nil {
       log.Fatal("Could not parse known_hosts file: ", err)
     }
   }
 
-  sshClientConfig := &ssh.ClientConfig{
-    User:             flagUser,
-    HostKeyCallback:  hostKeyCallback,
-    Timeout:          time.Duration(int64(time.Second * 20)),
-  }
-
-  // Let's work out our Authentication Method
-  if flagIdentityFile != "" { // We've been provided a specific keyfile argument
-    sshClientConfig.Auth = []ssh.AuthMethod{
-      ssh.PublicKeys(getPrivateKey(flagIdentityFile, true)),
-    }
-  } else { // No specific file was given, let's see if we can find an id_rsa
+  sshagent := sshAgent()
+  // start building our authMethod slice
+  sshAuthMethods := []ssh.AuthMethod{ssh.PublicKeysCallback(sshagent.Signers)}
+  if identityFileFlag != "" {
+    // We've been provided a specific keyfile argument
+    sshAuthMethods = []ssh.AuthMethod{ssh.PublicKeys(getPrivateKey(identityFileFlag, true))}
+  } else {
+    // No specific file was given, let's see if we can find an id_rsa
     signer := getPrivateKey(fmt.Sprintf("%s/.ssh/id_rsa", os.Getenv("HOME")), false)
     if signer != nil {
-      sshClientConfig.Auth = []ssh.AuthMethod{
-        ssh.PublicKeys(signer),
-      }
-    } else { // No id_rsa found, not keyfile arg, use password Auth
+      sshAuthMethods = append(sshAuthMethods, ssh.PublicKeys(signer))
+    } else {
+      // No id_rsa found, not keyfile arg, use password Auth
       password, err := passwordPrompt()
       if err != nil {
         log.Fatal("Could not read password: ", err)
       }
-      sshClientConfig.Auth = []ssh.AuthMethod{
-        ssh.PasswordCallback(passwordCallback(password)),
-      }
+      sshAuthMethods = append(sshAuthMethods, ssh.PasswordCallback(passwordCallback(password)))
     }
+  }
+  sshClientConfig := &ssh.ClientConfig{
+    User:             userFlag,
+    Auth:             sshAuthMethods,
+    HostKeyCallback:  hostKeyCallback,
+    Timeout:          time.Duration(int64(time.Second * 20)),
   }
 
   // Setting our full ExecutionConfig
@@ -161,10 +175,12 @@ func newExecutionConfig() (*ExecutionConfig) {
     Handler:          executor,
     Routines:         goroutines,
     ServerList:       servers,
-    SSHPort:          flagPort,
+    SSHPort:          portFlag,
     SSHClientConfig:  sshClientConfig,
-    Sudo:             flagSudo,
-    Verbose:          flagVerbose,
+    Sudo:             sudoFlag,
+    Verbose:          verboseFlag,
+    SSHAgentForward:  sshAgentForwardFlag,
+    SSHAgent:         sshagent,
     ComChannel:       executorComChannel,
   }
 }
@@ -174,7 +190,7 @@ func usage(exitstatus int, msg ...string) {
     fmt.Println(msg[0]) // We should only ever provide 1 extra arg to this function
   }
   // https://godoc.org/github.com/spf13/pflag#pkg-variables
-  flag.PrintDefaults()
+  flagSet.PrintDefaults()
   os.Exit(exitstatus)
 }
 
@@ -210,6 +226,14 @@ func getPrivateKey(identityFile string, failOnErr bool) (ssh.Signer) {
     log.Fatal("Could not parse private key: ", err)
   }
   return signer
+}
+
+func sshAgent() (agent.Agent) {
+  authSock, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
+  if err != nil {
+    return nil
+  }
+  return agent.NewClient(authSock)
 }
 
 func getScriptSrc(scriptPath string) ([]byte) {
