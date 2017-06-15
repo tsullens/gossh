@@ -116,6 +116,8 @@ func newExecutionConfig() (*ExecutionConfig) {
   */
   if procsFlag == -1 || len(servers) < procsFlag {
     goroutines = len(servers)
+  } else {
+    goroutines = procsFlag
   }
 
   executorComChannel := &ExecutorCom{
