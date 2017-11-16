@@ -1,6 +1,7 @@
 package main
 import (
   flag "github.com/spf13/pflag"
+  "github.com/spf13/viper"
   "golang.org/x/crypto/ssh/terminal"
   "golang.org/x/crypto/ssh"
   "golang.org/x/crypto/ssh/agent"
@@ -16,7 +17,7 @@ import (
   "net"
 )
 
-var flagSet *flag.FlagSet
+var gosshFlagSet *flag.FlagSet
 
 type ExecutionConfig struct {
   Handler           Executor
@@ -30,6 +31,7 @@ type ExecutionConfig struct {
   SSHAgent          agent.Agent
   ComChannel        *ExecutorCom
 }
+
 /*
   Custom type to represent a list of servers.
   This is intended to get more complex as I add the ability to provide
@@ -68,26 +70,24 @@ func newExecutionConfig() (*ExecutionConfig) {
     sshAgentForwardFlag  bool
   )
 
-  flagSet = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-  flagSet.BoolVarP(&helpFlag, "help", "h", false, "Print Help / Usage")
-  flagSet.StringVarP(&userFlag, "user", "u", os.Getenv("USER"), "Username for SSH connection. Required only if the SSH user differs from the ENV(\"USER\") value or if it is empty.")
-  flagSet.StringVarP(&identityFileFlag, "IdentityFile", "i", "", "Private Key file for SSH connection. Required only if an SSH Key other than ~/.ssh/id_rsa is to be used. Password fallback is enabled.")
-  flagSet.BoolVarP(&sudoFlag, "sudo", "s", false, "Use sudo for command execution. Optional.")
-  flagSet.BoolVarP(&verboseFlag, "verbose", "v", false, "Display verbose output. Optional.")
-  flagSet.StringVarP(&scriptFlag, "script", "S", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
-  flagSet.IntVarP(&portFlag, "port", "p", 22, "Port for SSH connection. Optional.")
-  flagSet.IntVar(&procsFlag, "procs", runtime.NumCPU(), "Number of goroutines to use. Optional. This value reflects the number of goroutines concurrently executing SSH Sessions, by default the NumCPUs is used.")
-  flagSet.BoolVarP(&versionFlag, "version", "V", false, "Print version")
-  flagSet.BoolVar(&sshAgentForwardFlag, "A", false, "Forward SSH Key from local ssh-agent.")
-  flagSet.StringVar(&knownHostsFileFlag, "KnownHostsFile", fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME")), "Location of known_hosts file.")
-  flagSet.BoolVar(&strictHostCheckFlag, "NoStrictHostCheck", false, "Disable Host Key Checking. Insecure.")
-  flagSet.MarkHidden("A")
-  flagSet.SortFlags = false
-  flagSet.Parse(os.Args[1:])
+  viper := viper.New()
 
-  if sshAgentForwardFlag {
-    fmt.Println("SSH Forwarding is not enabled in this version.")
-  }
+  gosshFlagSet = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+  gosshFlagSet.BoolVarP(&helpFlag, "help", "h", false, "Print Help / Usage")
+  gosshFlagSet.StringVarP(&userFlag, "user", "u", os.Getenv("USER"), "Username for SSH connection. Required only if the SSH user differs from the ENV(\"USER\") value or if it is empty.")
+  gosshFlagSet.StringVarP(&identityFileFlag, "IdentityFile", "i", "", "Private Key file for SSH connection. Required only if an SSH Key other than ~/.ssh/id_rsa is to be used. Password fallback is enabled.")
+  gosshFlagSet.BoolVarP(&sudoFlag, "sudo", "s", false, "Use sudo for command execution. Optional.")
+  gosshFlagSet.BoolVarP(&verboseFlag, "verbose", "v", false, "Display verbose output. Optional.")
+  gosshFlagSet.StringVarP(&scriptFlag, "script", "S", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
+  gosshFlagSet.IntVarP(&portFlag, "port", "p", 22, "Port for SSH connection. Optional.")
+  gosshFlagSet.IntVar(&procsFlag, "procs", runtime.NumCPU(), "Number of goroutines to use. Optional. This value is the number of concurrently executing SSH Sessions, by default the NumCPUs is used.")
+  gosshFlagSet.BoolVarP(&versionFlag, "version", "V", false, "Print version")
+  gosshFlagSet.BoolVar(&sshAgentForwardFlag, "A", false, "Forward SSH Key from local ssh-agent.")
+  gosshFlagSet.StringVar(&knownHostsFileFlag, "KnownHostsFile", fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME")), "Location of known_hosts file.")
+  gosshFlagSet.BoolVar(&strictHostCheckFlag, "NoStrictHostCheck", false, "Disable Host Key Checking. Insecure.")
+  gosshFlagSet.MarkHidden("A")
+  gosshFlagSet.SortFlags = false
+  gosshFlagSet.Parse(os.Args[1:])
 
   if helpFlag {
     usage(0)
@@ -96,18 +96,33 @@ func newExecutionConfig() (*ExecutionConfig) {
     fmt.Println(VERSION)
     os.Exit(0)
   }
-  // Setting our User
-  if userFlag == "" {
-    usage(1, "Username required.")
-  }
-  if len(flagSet.Args()) < 1 {
+
+  if len(gosshFlagSet.Args()) < 1 {
     usage(2, "At least one argument (host) is required.")
   } else {
-    servers, err = NewServerList(flagSet.Arg(0))
+    servers, err = NewServerList(gosshFlagSet.Arg(0))
     if err != nil {
       usage(3, fmt.Sprintf("Server list could not be parsed: %s", err.Error()))
     }
   }
+  /*
+    Trying to load our gossh config file
+  */
+  gosshConfigFile := fmt.Sprintf("%s/.gossh/config", os.Getenv("HOME"))
+  if _, err := os.Stat(gosshConfigFile); os.IsNotExist(err) {
+    if verboseFlag {
+      fmt.Println("INFO: No gossh config file found: ", gosshConfigFile)
+    }
+  } else {
+    viper.SetConfigFile(gosshConfigFile)
+    viper.SetConfigType("toml")
+    err := viper.ReadInConfig()
+    if err != nil {
+      fmt.Println("WARN: Error reading gossh config, trying to proceed: ", err.Error())
+    }
+  }
+  viper.BindPFlags(flag.CommandLine)
+  fmt.Printf("CONFIG: %+v\n", viper)
   /*
     This sets the number of go routines we will use for parallel execution.
     A -1 provided for this flag will have us create an Executor for every server,
@@ -130,8 +145,8 @@ func newExecutionConfig() (*ExecutionConfig) {
     if err != nil {
       log.Fatal("Could not create ScriptExecutor: ", err)
     }
-  } else if len(flagSet.Args()[1:]) > 0 {
-    executor = NewCommandExecutor(flagSet.Args()[1:], executorComChannel)
+  } else if len(gosshFlagSet.Args()[1:]) > 0 {
+    executor = NewCommandExecutor(gosshFlagSet.Args()[1:], executorComChannel)
   } else {
     usage(3, "No script or commands provided.")
   }
@@ -192,7 +207,7 @@ func usage(exitstatus int, msg ...string) {
     fmt.Println(msg[0]) // We should only ever provide 1 extra arg to this function
   }
   // https://godoc.org/github.com/spf13/pflag#pkg-variables
-  flagSet.PrintDefaults()
+  gosshFlagSet.PrintDefaults()
   os.Exit(exitstatus)
 }
 

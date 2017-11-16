@@ -153,13 +153,11 @@ func (exec *CommandExecutor) Run() {
       defer session.Close()
 
       cmdOut, err := session.CombinedOutput(cmd)
-      if err != nil {
-          response.addResponseData(fmt.Sprintf("Failed to run cmd (%s): %s", cmd, err.Error()))
-          exec.ResponseChannel <- *response
-          continue
-      }
       response.addResponseData(fmt.Sprintf("%s%s%s", TERM_YELLOW, cmd, TERM_CLEAR))
       response.addResponseData(fmt.Sprintf("%s%s%s", TERM_CYAN, string(cmdOut), TERM_CLEAR))
+      if err != nil {
+          response.addResponseData(fmt.Sprintf("Failed to run cmd (%s): %v", cmd, err.Error()))
+      }
     }
     // Last we send our response (ExecutorResponse) struct to our main routine.
     Config.logVerbose(fmt.Sprintf("Sending host %s response", host))
@@ -230,13 +228,11 @@ func (exec *ScriptExecutor) Run() {
       continue
     }
     cmdOut, err = session.CombinedOutput(scriptCmd)
-    if err != nil {
-      response.addResponseData(fmt.Sprintf("Failed to run script: %s", err.Error()))
-      exec.ResponseChannel <- *response
-      continue
-    }
     response.addResponseData(fmt.Sprintf("%s%s%s", TERM_YELLOW, scriptCmd, TERM_CLEAR))
     response.addResponseData(fmt.Sprintf("%s%s%s", TERM_CYAN, string(cmdOut), TERM_CLEAR))
+    if err != nil {
+      response.addResponseData(fmt.Sprintf("Failed to run script: %s", err.Error()))
+    }
     session.Close()
 
     /*

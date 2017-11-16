@@ -4,7 +4,7 @@ import (
   "fmt"
 )
 
-const VERSION = "0.0.3"
+const VERSION = "0.3"
 const TERM_CYAN = "\x1b[0;36m"
 const TERM_GREEN = "\x1b[0;32m"
 const TERM_YELLOW = "\x1b[0;33m"
