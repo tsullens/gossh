@@ -29,7 +29,7 @@ func main() {
     userFlag             string
     identityFileFlag     string
     sudoFlag             bool
-    verboseFlag          bool
+    //verboseFlag          bool
     scriptFlag           string
     portFlag             int
     procsFlag            int
@@ -56,7 +56,7 @@ func main() {
   flagSet.StringVarP(&userFlag, "user", "u", os.Getenv("USER"), "Username for SSH connection. Required only if the SSH user differs from the ENV(\"USER\") value or if it is empty.")
   flagSet.StringVarP(&identityFileFlag, "IdentityFile", "i", "", "Private Key file for SSH connection. Required only if an SSH Key other than ~/.ssh/id_rsa is to be used. Password fallback is enabled.")
   flagSet.BoolVarP(&sudoFlag, "sudo", "s", false, "Use sudo for command execution. Optional.")
-  flagSet.BoolVarP(&verboseFlag, "verbose", "v", false, "Display verbose output. Optional.")
+  //flagSet.BoolVarP(&verboseFlag, "verbose", "v", false, "Display verbose output. Optional.")
   flagSet.StringVarP(&scriptFlag, "script", "S", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
   flagSet.IntVarP(&portFlag, "port", "p", 22, "Port for SSH connection. Optional.")
   flagSet.IntVar(&procsFlag, "procs", runtime.NumCPU(), "Number of goroutines to use. Optional. This value is the number of concurrently executing SSH Sessions, by default the NumCPUs is used.")
