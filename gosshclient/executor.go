@@ -1,7 +1,8 @@
-package main
+package gosshclient
 
 import (
   "golang.org/x/crypto/ssh"
+  "golang.org/x/crypto/ssh/agent"
   "github.com/tmc/scp"
   "crypto/sha256"
   "encoding/hex"
@@ -15,51 +16,43 @@ import (
   "errors"
 )
 
-type Executor interface {
-  Run()
+type executor interface {
+  run(<-chan string, chan<- *ClientResponse)
 }
 
-type CommandExecutor struct {
-  Commands        []string
-  JobChannel      chan string
-  ResponseChannel chan ExecutorResponse
+type commandExecutor struct {
+  port           int
+  clientConfig   *ssh.ClientConfig
+  sudo           bool
+  agent          agent.Agent
+  user           string
+  commands       []string
 }
 
-type ScriptExecutor struct {
-  FileSize        int64
-  FileReader      io.Reader
-  FileNameTmp     string
-  ScriptCmd       string
-  JobChannel      chan string
-  ResponseChannel chan ExecutorResponse
+type scriptExecutor struct {
+  port           int
+  clientConfig   *ssh.ClientConfig
+  sudo           bool
+  agent          agent.Agent
+  user           string
+  fileSize       int64
+  fileReader     io.Reader
+  fileNameTmp    string
+  scriptCmd      string
 }
 
-/*
-  This struct is used in main() but not here
-  Might just get rid of it.
-*/
-type ExecutorCom struct {
-  JobChannel       chan string
-  ResponseChannel  chan ExecutorResponse
-}
-
-type ExecutorResponse struct {
-  Host          string
-  ResponseData  string
-}
-func (r *ExecutorResponse) addResponseData(data string) {
-  r.ResponseData = fmt.Sprintf("%s\n%s", r.ResponseData, data)
-}
-
-func NewCommandExecutor(args []string, com *ExecutorCom) (*CommandExecutor) {
-  return &CommandExecutor{
-    Commands:         args,
-    JobChannel:       com.JobChannel,
-    ResponseChannel:  com.ResponseChannel,
+func newCommandExecutor(args []string, port int, clientConfig *ssh.ClientConfig, sudo bool, agent agent.Agent, user string) (*commandExecutor) {
+  return &commandExecutor{
+    port:         port,
+    clientConfig: clientConfig,
+    sudo:         sudo,
+    agent:        agent,
+    user:         user,
+    commands:     args,
   }
 }
 
-func NewScriptExecutor(arg string, com *ExecutorCom) (*ScriptExecutor, error) {
+func newScriptExecutor(arg string, port int, clientConfig *ssh.ClientConfig, sudo bool, agent agent.Agent, user string) (*scriptExecutor, error) {
 
   var (
     cmd string
@@ -103,69 +96,68 @@ func NewScriptExecutor(arg string, com *ExecutorCom) (*ScriptExecutor, error) {
   }
   fileSum := sha256.Sum256([]byte(s.Name()))
 
-  return &ScriptExecutor{
-    FileSize:       s.Size(),
-    FileReader:     bytes.NewBuffer(buf),
-    FileNameTmp:    hex.EncodeToString(fileSum[:]),
-    ScriptCmd:      cmd,
-    //ComChannel:   com,
-    JobChannel:     com.JobChannel,
-    ResponseChannel:  com.ResponseChannel,
+  return &scriptExecutor{
+    port:          port,
+    clientConfig:  clientConfig,
+    sudo:          sudo,
+    agent:         agent,
+    user:          user,
+    fileSize:      s.Size(),
+    fileReader:    bytes.NewBuffer(buf),
+    fileNameTmp:   hex.EncodeToString(fileSum[:]),
+    scriptCmd:     cmd,
   }, nil
 }
 
-func (exec *CommandExecutor) Run() {
-  Config.logVerbose("Started CommandExecutor goroutine")
+func (exec *commandExecutor) run(serverChan <-chan string, responseChan chan<- *ClientResponse) {
   /*
     We range over "jobs" (hosts) in the JobChannel channel and pull each off to
     run
   */
-  for host := range exec.JobChannel {
-    Config.logVerbose(fmt.Sprintf("Started run of host %s", host))
+  for host := range serverChan {
 
     // initiate our response struct
-    response := &ExecutorResponse{
+    response := &ClientResponse{
       Host: host,
     }
     // Create our SSH client for this host
-    client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, Config.SSHPort), Config.SSHClientConfig)
+    client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, exec.port), exec.clientConfig)
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to connect: %s", err.Error()))
-      exec.ResponseChannel <- *response
+      responseChan <- response
       continue
     }
-    Config.logVerbose(fmt.Sprintf("Connected to host %s", host))
     /*
       We iterate over all over our commands and execute each of them
     */
-    for _, cmd := range exec.Commands {
-      if Config.Sudo {
+    for _, cmd := range exec.commands {
+      if exec.sudo {
         cmd = fmt.Sprintf("sudo %s", cmd)
       }
-      Config.logVerbose(fmt.Sprintf("Running command %s on host %s", cmd, host))
 
       session, err := client.NewSession()
       if err != nil {
         response.addResponseData(fmt.Sprintf("Failed to create session: %s", err.Error()))
-        exec.ResponseChannel <- *response
+        responseChan <- response
         continue
       }
       defer session.Close()
 
       cmdOut, err := session.CombinedOutput(cmd)
+      if err != nil {
+          response.addResponseData(fmt.Sprintf("Failed to run cmd (%s): %s", cmd, err.Error()))
+          responseChan <- response
+          continue
+      }
       response.addResponseData(fmt.Sprintf("%s%s%s", TERM_YELLOW, cmd, TERM_CLEAR))
       response.addResponseData(fmt.Sprintf("%s%s%s", TERM_CYAN, string(cmdOut), TERM_CLEAR))
-      if err != nil {
-          response.addResponseData(fmt.Sprintf("Failed to run cmd (%s): %v", cmd, err.Error()))
-      }
     }
-    // Last we send our response (ExecutorResponse) struct to our main routine.
-    Config.logVerbose(fmt.Sprintf("Sending host %s response", host))
-    exec.ResponseChannel <- *response
+    // Last we send our response (ClientResponse) struct to our main routine.
+    responseChan <- response
   }
 }
 
-func (exec *ScriptExecutor) Run() {
+func (exec *scriptExecutor) run(serverChan <-chan string, responseChan chan<- *ClientResponse) {
   remoteDir := "/tmp"
   var (
     session *ssh.Session
@@ -174,12 +166,12 @@ func (exec *ScriptExecutor) Run() {
     scriptCmd string
     err error
   )
-  if exec.ScriptCmd == "" {
-    scriptCmd = fmt.Sprintf("%s/%s", remoteDir, exec.FileNameTmp)
+  if exec.scriptCmd == "" {
+    scriptCmd = fmt.Sprintf("%s/%s", remoteDir, exec.fileNameTmp)
   } else {
-    scriptCmd = fmt.Sprintf("%s %s/%s", exec.ScriptCmd, remoteDir, exec.FileNameTmp)
+    scriptCmd = fmt.Sprintf("%s %s/%s", exec.scriptCmd, remoteDir, exec.fileNameTmp)
   }
-  if Config.Sudo {
+  if exec.sudo {
     scriptCmd = fmt.Sprintf("sudo %s", scriptCmd)
   }
 
@@ -187,16 +179,16 @@ func (exec *ScriptExecutor) Run() {
     We range over "jobs" (hosts) in the JobChannel channel and pull each off to
     run
   */
-  for host := range exec.JobChannel {
+  for host := range serverChan {
     // initiate our response struct
-    response := &ExecutorResponse{
+    response := &ClientResponse{
       Host: host,
     }
     // Create our SSH client for this host
-    client, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, Config.SSHPort), Config.SSHClientConfig)
+    client, err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, exec.port), exec.clientConfig)
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to connect & run script: %s", err.Error()))
-      exec.ResponseChannel <- *response
+      responseChan <- response
       continue
     }
     /*
@@ -205,15 +197,14 @@ func (exec *ScriptExecutor) Run() {
     session, err = client.NewSession()
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to create session: %s", err.Error()))
-      exec.ResponseChannel <- *response
+      responseChan <- response
       continue
     }
     defer session.Close()
-    Config.logVerbose(fmt.Sprintf("SSH Session to %s established, copying script: %s", host, exec.FileNameTmp))
-    err = scp.Copy(exec.FileSize, os.FileMode(0755), exec.FileNameTmp, exec.FileReader, remoteDir, session)
+    err = scp.Copy(exec.fileSize, os.FileMode(0755), exec.fileNameTmp, exec.fileReader, remoteDir, session)
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to copy script: %s", err.Error()))
-      exec.ResponseChannel <- *response
+      responseChan <- response
       continue
     }
     session.Close()
@@ -224,15 +215,17 @@ func (exec *ScriptExecutor) Run() {
     session, err = client.NewSession()
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to create session: %s", err.Error()))
-      exec.ResponseChannel <- *response
+      responseChan <- response
       continue
     }
     cmdOut, err = session.CombinedOutput(scriptCmd)
-    response.addResponseData(fmt.Sprintf("%s%s%s", TERM_YELLOW, scriptCmd, TERM_CLEAR))
-    response.addResponseData(fmt.Sprintf("%s%s%s", TERM_CYAN, string(cmdOut), TERM_CLEAR))
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to run script: %s", err.Error()))
+      responseChan <- response
+      continue
     }
+    response.addResponseData(fmt.Sprintf("%s%s%s", TERM_YELLOW, scriptCmd, TERM_CLEAR))
+    response.addResponseData(fmt.Sprintf("%s%s%s", TERM_CYAN, string(cmdOut), TERM_CLEAR))
     session.Close()
 
     /*
@@ -241,16 +234,16 @@ func (exec *ScriptExecutor) Run() {
     session, err = client.NewSession()
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to create session: %s", err.Error()))
-      exec.ResponseChannel <- *response
+      responseChan <- response
       continue
     }
-    cmdOut, err = session.CombinedOutput(fmt.Sprintf("rm -f %s/%s", remoteDir, exec.FileNameTmp))
+    cmdOut, err = session.CombinedOutput(fmt.Sprintf("rm -f %s/%s", remoteDir, exec.fileNameTmp))
     if err != nil {
       response.addResponseData(fmt.Sprintf("Failed to remove script: %s", err.Error()))
-      exec.ResponseChannel <- *response
+      responseChan <- response
       continue
     }
-    // Last we send our response (ExecutorResponse) struct to our main routine.
-    exec.ResponseChannel <- *response
+    // Last we send our response (ClientResponse) struct to our main routine.
+    responseChan <- response
   }
 }
