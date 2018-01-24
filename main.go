@@ -25,6 +25,7 @@ func main() {
     servers              gosshclient.ServerList
     err                  error
     hostKeyCallback      ssh.HostKeyCallback
+    proxyHostFlag        string
     helpFlag             bool
     userFlag             string
     identityFileFlag     string
@@ -59,6 +60,7 @@ func main() {
   //flagSet.BoolVarP(&verboseFlag, "verbose", "v", false, "Display verbose output. Optional.")
   flagSet.StringVarP(&scriptFlag, "script", "S", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
   flagSet.IntVarP(&portFlag, "port", "p", 22, "Port for SSH connection. Optional.")
+  flagSet.StringVarP(&proxyHostFlag, "ProxyHost", "X", "", "Bastion / Jumphost to proxy through.")
   flagSet.IntVar(&procsFlag, "procs", runtime.NumCPU(), "Number of goroutines to use. Optional. This value is the number of concurrently executing SSH Sessions, by default the NumCPUs is used.")
   flagSet.BoolVarP(&versionFlag, "version", "v", false, "Print version")
   flagSet.BoolVar(&sshAgentForwardFlag, "A", false, "Forward SSH Key from local ssh-agent.")
@@ -88,14 +90,11 @@ func main() {
   gclient := gosshclient.NewGosshClient(servers)
   gclient.Port(portFlag)
   gclient.Agent(sshAgent())
+  gclient.ProxyHost(proxyHostFlag)
   if sudoFlag {
     gclient.Sudo()
   }
-  _proxy_test := &gosshclient.GosshProxyConfig{
-    Host:     "route01-dc",
-    Command:  "nc %h %p",
-  }
-  gclient.ProxyConfig(_proxy_test)
+
   /*
     This sets the number of go routines we will use for parallel execution.
     A -1 provided for this flag will have us create an Executor for every server,

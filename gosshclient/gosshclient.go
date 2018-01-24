@@ -20,11 +20,6 @@ const TERM_GREEN = "\x1b[0;32m"
 const TERM_YELLOW = "\x1b[0;33m"
 const TERM_CLEAR = "\033[0m"
 
-type GosshProxyConfig struct {
-  Host    string
-  Command string
-}
-
 type GosshClient struct {
   handler        executor
   serverList     ServerList
@@ -34,7 +29,7 @@ type GosshClient struct {
   sudo           bool
   agent          agent.Agent
   user           string
-  proxyConfig    *GosshProxyConfig
+  proxyHost      string
 }
 
 func NewGosshClient(servers ServerList) (*GosshClient) {
@@ -72,8 +67,8 @@ func (c *GosshClient) Port(p int) {
   c.port = p
 }
 // Use provided proxy config for SSH connections
-func (c *GosshClient) ProxyConfig(conf *GosshProxyConfig) {
-  c.proxyConfig = conf
+func (c *GosshClient) ProxyHost(host string) {
+  c.proxyHost = host
 }
 
 func (client *GosshClient) ExecuteCommands(commands []string) ([]*ClientResponse, error) {
@@ -81,7 +76,7 @@ func (client *GosshClient) ExecuteCommands(commands []string) ([]*ClientResponse
   if err != nil {
     return nil, err
   }
-  client.handler = newCommandExecutor(commands, client.port, client.clientConfig, client.sudo, client.agent, client.user, client.proxyConfig)
+  client.handler = newCommandExecutor(commands, client.port, client.clientConfig, client.sudo, client.agent, client.user, client.proxyHost)
   return client.execute()
 }
 
@@ -91,7 +86,7 @@ func (client *GosshClient) ExecuteScript(scriptArg string) ([]*ClientResponse, e
   if err != nil {
     return nil, err
   }
-  client.handler, err = newScriptExecutor(scriptArg, client.port, client.clientConfig, client.sudo, client.agent, client.user, client.proxyConfig)
+  client.handler, err = newScriptExecutor(scriptArg, client.port, client.clientConfig, client.sudo, client.agent, client.user, client.proxyHost)
   if err != nil {
     return nil, err
   }
