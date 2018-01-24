@@ -18,7 +18,7 @@ import (
   "net"
 )
 
-const VERSION = "0.4"
+const VERSION = "0.4.1"
 
 func main() {
   var (
@@ -60,7 +60,7 @@ func main() {
   flagSet.StringVarP(&scriptFlag, "script", "S", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
   flagSet.IntVarP(&portFlag, "port", "p", 22, "Port for SSH connection. Optional.")
   flagSet.IntVar(&procsFlag, "procs", runtime.NumCPU(), "Number of goroutines to use. Optional. This value is the number of concurrently executing SSH Sessions, by default the NumCPUs is used.")
-  flagSet.BoolVarP(&versionFlag, "version", "V", false, "Print version")
+  flagSet.BoolVarP(&versionFlag, "version", "v", false, "Print version")
   flagSet.BoolVar(&sshAgentForwardFlag, "A", false, "Forward SSH Key from local ssh-agent.")
   flagSet.StringVar(&knownHostsFileFlag, "KnownHostsFile", fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME")), "Location of known_hosts file.")
   flagSet.BoolVar(&strictHostCheckFlag, "NoStrictHostCheck", false, "Disable Host Key Checking. Insecure.")
@@ -91,6 +91,11 @@ func main() {
   if sudoFlag {
     gclient.Sudo()
   }
+  _proxy_test := &gosshclient.GosshProxyConfig{
+    Host:     "route01-dc",
+    Command:  "nc %h %p",
+  }
+  gclient.ProxyConfig(_proxy_test)
   /*
     This sets the number of go routines we will use for parallel execution.
     A -1 provided for this flag will have us create an Executor for every server,

@@ -20,6 +20,11 @@ const TERM_GREEN = "\x1b[0;32m"
 const TERM_YELLOW = "\x1b[0;33m"
 const TERM_CLEAR = "\033[0m"
 
+type GosshProxyConfig struct {
+  Host    string
+  Command string
+}
+
 type GosshClient struct {
   handler        executor
   serverList     ServerList
@@ -29,6 +34,7 @@ type GosshClient struct {
   sudo           bool
   agent          agent.Agent
   user           string
+  proxyConfig    *GosshProxyConfig
 }
 
 func NewGosshClient(servers ServerList) (*GosshClient) {
@@ -41,29 +47,33 @@ func NewGosshClient(servers ServerList) (*GosshClient) {
     user:         os.Getenv("USER"),
   }
 }
-
+// Provide a custom SSH ClientConfig to use.
 func (c *GosshClient) ClientConfig(conf *ssh.ClientConfig) {
   c.clientConfig = conf
 }
-
+// Provide a custom SSH agent to use.
 func (c *GosshClient) Agent(agent agent.Agent) {
   c.agent = agent
 }
-
+// Execute commands with sudo on remote servers.
 func (c *GosshClient) Sudo() {
   c.sudo = true
 }
-
+// Number of parallel routines to use (i.e. thread pool)
 func (c *GosshClient) Routines(num int) {
   c.routines = num
 }
-
+// Specify user to connect as. Default is to use current user.
 func (c *GosshClient) User(u string) {
   c.user = u
 }
-
+// Specify non-default (22) SSH port to connect to
 func (c *GosshClient) Port(p int) {
   c.port = p
+}
+// Use provided proxy config for SSH connections
+func (c *GosshClient) ProxyConfig(conf *GosshProxyConfig) {
+  c.proxyConfig = conf
 }
 
 func (client *GosshClient) ExecuteCommands(commands []string) ([]*ClientResponse, error) {
@@ -71,7 +81,7 @@ func (client *GosshClient) ExecuteCommands(commands []string) ([]*ClientResponse
   if err != nil {
     return nil, err
   }
-  client.handler = newCommandExecutor(commands, client.port, client.clientConfig, client.sudo, client.agent, client.user)
+  client.handler = newCommandExecutor(commands, client.port, client.clientConfig, client.sudo, client.agent, client.user, client.proxyConfig)
   return client.execute()
 }
 
@@ -81,7 +91,7 @@ func (client *GosshClient) ExecuteScript(scriptArg string) ([]*ClientResponse, e
   if err != nil {
     return nil, err
   }
-  client.handler, err = newScriptExecutor(scriptArg, client.port, client.clientConfig, client.sudo, client.agent, client.user)
+  client.handler, err = newScriptExecutor(scriptArg, client.port, client.clientConfig, client.sudo, client.agent, client.user, client.proxyConfig)
   if err != nil {
     return nil, err
   }
@@ -138,7 +148,6 @@ func (client *GosshClient) initClientConfig() (error) {
   if client.agent != nil {
     sshAuthMethods = append(sshAuthMethods, ssh.PublicKeysCallback(client.agent.Signers))
   }
-  sshAuthMethods = append(sshAuthMethods, ssh.PublicKeysCallback(client.agent.Signers))
   signer, err := getPrivateKey(fmt.Sprintf("%s/.ssh/id_rsa", os.Getenv("HOME")))
   if signer != nil {
     sshAuthMethods = append(sshAuthMethods, ssh.PublicKeys(signer))
@@ -165,7 +174,7 @@ type ClientResponse struct {
 }
 
 func (cr *ClientResponse) String() (string) {
-  return fmt.Sprintf("Host: %s%s%s\n%s\n--------------------------------\n", TERM_GREEN, cr.Host, TERM_CLEAR, cr.ResponseData)
+  return fmt.Sprintf("Host: %s%s%s\r%s\n--------------------------------", TERM_GREEN, cr.Host, TERM_CLEAR, cr.ResponseData)
 }
 
 func (cr *ClientResponse) addResponseData(data string) {

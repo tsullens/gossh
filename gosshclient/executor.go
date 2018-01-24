@@ -27,6 +27,7 @@ type commandExecutor struct {
   agent          agent.Agent
   user           string
   commands       []string
+  proxyConfig    *GosshProxyConfig
 }
 
 type scriptExecutor struct {
@@ -39,9 +40,10 @@ type scriptExecutor struct {
   fileReader     io.Reader
   fileNameTmp    string
   scriptCmd      string
+  proxyConfig    *GosshProxyConfig
 }
 
-func newCommandExecutor(args []string, port int, clientConfig *ssh.ClientConfig, sudo bool, agent agent.Agent, user string) (*commandExecutor) {
+func newCommandExecutor(args []string, port int, clientConfig *ssh.ClientConfig, sudo bool, agent agent.Agent, user string, proxyConfig *GosshProxyConfig) (*commandExecutor) {
   return &commandExecutor{
     port:         port,
     clientConfig: clientConfig,
@@ -49,10 +51,11 @@ func newCommandExecutor(args []string, port int, clientConfig *ssh.ClientConfig,
     agent:        agent,
     user:         user,
     commands:     args,
+    proxyConfig: proxyConfig,
   }
 }
 
-func newScriptExecutor(arg string, port int, clientConfig *ssh.ClientConfig, sudo bool, agent agent.Agent, user string) (*scriptExecutor, error) {
+func newScriptExecutor(arg string, port int, clientConfig *ssh.ClientConfig, sudo bool, agent agent.Agent, user string, proxyConfig *GosshProxyConfig) (*scriptExecutor, error) {
 
   var (
     cmd string
@@ -106,6 +109,7 @@ func newScriptExecutor(arg string, port int, clientConfig *ssh.ClientConfig, sud
     fileReader:    bytes.NewBuffer(buf),
     fileNameTmp:   hex.EncodeToString(fileSum[:]),
     scriptCmd:     cmd,
+    proxyConfig:   proxyConfig,
   }, nil
 }
 
@@ -115,17 +119,41 @@ func (exec *commandExecutor) run(serverChan <-chan string, responseChan chan<- *
     run
   */
   for host := range serverChan {
-
+    var (
+      client *ssh.Client
+      conn_err error
+    )
     // initiate our response struct
     response := &ClientResponse{
       Host: host,
     }
     // Create our SSH client for this host
-    client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, exec.port), exec.clientConfig)
-    if err != nil {
-      response.addResponseData(fmt.Sprintf("Failed to connect: %s", err.Error()))
+    if exec.proxyConfig != nil {
+      client, conn_err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", exec.proxyConfig.Host, exec.port), exec.clientConfig)
+    } else {
+      client, conn_err = ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, exec.port), exec.clientConfig)
+    }
+    if conn_err != nil {
+      response.addResponseData(fmt.Sprintf("Failed to connect: %s", conn_err.Error()))
       responseChan <- response
       continue
+    }
+
+    // Set up our proxy session
+    if exec.proxyConfig != nil {
+      proxyConn, err := client.Dial("tcp", fmt.Sprintf("%s:%d", host, exec.port))
+      if err != nil {
+        response.addResponseData(fmt.Sprintf("Failed to establish proxy session for host %s: %s", host, err.Error()))
+        responseChan <- response
+        continue
+      }
+      c, nc, rc, err := ssh.NewClientConn(proxyConn, fmt.Sprintf("%s:%d", host, exec.port), exec.clientConfig)
+      if err != nil {
+        response.addResponseData(fmt.Sprintf("Failed to establish proxy session for host %s: %s", host, err.Error()))
+        responseChan <- response
+        continue
+      }
+      client = ssh.NewClient(c, nc, rc)
     }
     /*
       We iterate over all over our commands and execute each of them
@@ -150,10 +178,11 @@ func (exec *commandExecutor) run(serverChan <-chan string, responseChan chan<- *
           continue
       }
       response.addResponseData(fmt.Sprintf("%s%s%s", TERM_YELLOW, cmd, TERM_CLEAR))
-      response.addResponseData(fmt.Sprintf("%s%s%s", TERM_CYAN, string(cmdOut), TERM_CLEAR))
-    }
+      response.addResponseData(fmt.Sprintf("%s%s%s", TERM_CYAN, strings.TrimSpace(string(cmdOut)), TERM_CLEAR))
+    } // range: commands
     // Last we send our response (ClientResponse) struct to our main routine.
     responseChan <- response
+    // range: host
   }
 }
 
