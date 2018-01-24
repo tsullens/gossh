@@ -43,32 +43,39 @@ func NewGosshClient(servers ServerList) (*GosshClient) {
   }
 }
 // Provide a custom SSH ClientConfig to use.
-func (c *GosshClient) ClientConfig(conf *ssh.ClientConfig) {
+func (c *GosshClient) ClientConfig(conf *ssh.ClientConfig) (*GosshClient) {
   c.clientConfig = conf
+  return c
 }
 // Provide a custom SSH agent to use.
+// This will only be used if a custom ClientConfig is not provided.
 func (c *GosshClient) Agent(agent agent.Agent) {
   c.agent = agent
 }
 // Execute commands with sudo on remote servers.
-func (c *GosshClient) Sudo() {
+func (c *GosshClient) Sudo() (*GosshClient) {
   c.sudo = true
+  return c
 }
 // Number of parallel routines to use (i.e. thread pool)
-func (c *GosshClient) Routines(num int) {
+func (c *GosshClient) Routines(num int) (*GosshClient) {
   c.routines = num
+  return c
 }
 // Specify user to connect as. Default is to use current user.
-func (c *GosshClient) User(u string) {
+func (c *GosshClient) User(u string) (*GosshClient) {
   c.user = u
+  return c
 }
 // Specify non-default (22) SSH port to connect to
-func (c *GosshClient) Port(p int) {
+func (c *GosshClient) Port(p int) (*GosshClient) {
   c.port = p
+  return c
 }
 // Use provided proxy config for SSH connections
-func (c *GosshClient) ProxyHost(host string) {
+func (c *GosshClient) ProxyHost(host string) (*GosshClient) {
   c.proxyHost = host
+  return c
 }
 
 func (client *GosshClient) ExecuteCommands(commands []string) ([]*ClientResponse, error) {
@@ -76,7 +83,7 @@ func (client *GosshClient) ExecuteCommands(commands []string) ([]*ClientResponse
   if err != nil {
     return nil, err
   }
-  client.handler = newCommandExecutor(commands, client.port, client.clientConfig, client.sudo, client.agent, client.user, client.proxyHost)
+  client.handler = newCommandExecutor(commands, client.port, client.clientConfig, client.sudo, client.user, client.proxyHost)
   return client.execute()
 }
 
@@ -86,7 +93,7 @@ func (client *GosshClient) ExecuteScript(scriptArg string) ([]*ClientResponse, e
   if err != nil {
     return nil, err
   }
-  client.handler, err = newScriptExecutor(scriptArg, client.port, client.clientConfig, client.sudo, client.agent, client.user, client.proxyHost)
+  client.handler, err = newScriptExecutor(scriptArg, client.port, client.clientConfig, client.sudo, client.user, client.proxyHost)
   if err != nil {
     return nil, err
   }

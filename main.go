@@ -87,10 +87,7 @@ func main() {
       usage(flagSet, 3, fmt.Sprintf("Server list could not be parsed: %s", err.Error()))
     }
   }
-  gclient := gosshclient.NewGosshClient(servers)
-  gclient.Port(portFlag)
-  gclient.Agent(sshAgent())
-  gclient.ProxyHost(proxyHostFlag)
+  gclient := gosshclient.NewGosshClient(servers).Port(portFlag).ProxyHost(proxyHostFlag)
   if sudoFlag {
     gclient.Sudo()
   }
@@ -116,26 +113,9 @@ func main() {
       log.Fatal("Could not parse known_hosts file: ", err)
     }
   }
-  sshagent := sshAgent()
   // start building our authMethod slice
-  sshAuthMethods := []ssh.AuthMethod{ssh.PublicKeysCallback(sshagent.Signers)}
-  if identityFileFlag != "" {
-    // We've been provided a specific keyfile argument
-    sshAuthMethods = append(sshAuthMethods, ssh.PublicKeys(getPrivateKey(identityFileFlag, true)))
-  } else {
-    // No specific file was given, let's see if we can find an id_rsa
-    signer := getPrivateKey(fmt.Sprintf("%s/.ssh/id_rsa", os.Getenv("HOME")), false)
-    if signer != nil {
-      sshAuthMethods = append(sshAuthMethods, ssh.PublicKeys(signer))
-    } else {
-      // No id_rsa found, not keyfile arg, use password Auth
-      password, err := passwordPrompt()
-      if err != nil {
-        log.Fatal("Could not read password: ", err)
-      }
-      sshAuthMethods = append(sshAuthMethods, ssh.PasswordCallback(passwordCallback(password)))
-    }
-  }
+  sshAuthMethods := []ssh.AuthMethod{sshAgent(), sshPrivateKey(identityFileFlag), sshPassword()}
+
   sshClientConfig := &ssh.ClientConfig{
     User:             userFlag,
     Auth:             sshAuthMethods,
@@ -170,26 +150,30 @@ func usage(flagSet *flag.FlagSet, exitstatus int, msg ...string) {
   os.Exit(exitstatus)
 }
 
-func passwordPrompt() (string, error) {
-  fmt.Print("Password: ")
-  password, err := terminal.ReadPassword(int(syscall.Stdin))
-  fmt.Println()
-  if err != nil {
-    return "", err
-  }
-  return strings.TrimSpace(string(password)), nil
-}
-// Callback Method: returns a func to be used in a Callback.
-func passwordCallback(password string) (func() (string, error)) {
+func passwordCallback() (func() (string, error)) {
   return func() (string, error) {
-    return password, nil
+    fmt.Print("Password: ")
+    password, err := terminal.ReadPassword(int(syscall.Stdin))
+    fmt.Println()
+    if err != nil {
+      return "", err
+    }
+    return strings.TrimSpace(string(password)), nil
   }
+}
+func sshPassword() (ssh.AuthMethod) {
+  return ssh.PasswordCallback(passwordCallback())
 }
 
-// This is kinda a hacky method right now. There's two cases we want to use this:
-// 1. To check if an id_rsa exists & is usable: we don't want to Fatal
-// 2. If a specific keyfile is passed as an arg we want to Fatal if we can't use it.
-func getPrivateKey(identityFile string, failOnErr bool) (ssh.Signer) {
+// Basically we assume that identityFile has been set via a flag, and if so we
+// want to fail if we can't use it for whatever reason.
+// If it is an empty string then we can try to use the standard id_rsa but fail gracefully.
+func sshPrivateKey(identityFile string) (ssh.AuthMethod) {
+  failOnErr := true
+  if identityFile == "" {
+    identityFile = fmt.Sprintf("%s/.ssh/id_rsa", os.Getenv("HOME"))
+    failOnErr = false
+  }
   key, err := ioutil.ReadFile(identityFile)
   if err != nil {
     if failOnErr {
@@ -201,15 +185,16 @@ func getPrivateKey(identityFile string, failOnErr bool) (ssh.Signer) {
   if err != nil {
     log.Fatal("Could not parse private key: ", err)
   }
-  return signer
+  return ssh.PublicKeys(signer)
 }
 
-func sshAgent() (agent.Agent) {
+func sshAgent() (ssh.AuthMethod) {
   authSock, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
   if err != nil {
     return nil
   }
-  return agent.NewClient(authSock)
+  sshagent := agent.NewClient(authSock)
+  return ssh.PublicKeysCallback(sshagent.Signers)
 }
 
 func getScriptSrc(scriptPath string) ([]byte) {

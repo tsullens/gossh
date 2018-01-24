@@ -2,7 +2,6 @@ package gosshclient
 
 import (
   "golang.org/x/crypto/ssh"
-  "golang.org/x/crypto/ssh/agent"
   "github.com/tmc/scp"
   "crypto/sha256"
   "encoding/hex"
@@ -24,7 +23,6 @@ type commandExecutor struct {
   port           int
   clientConfig   *ssh.ClientConfig
   sudo           bool
-  agent          agent.Agent
   user           string
   commands       []string
   proxyHost      string
@@ -34,7 +32,6 @@ type scriptExecutor struct {
   port           int
   clientConfig   *ssh.ClientConfig
   sudo           bool
-  agent          agent.Agent
   user           string
   fileSize       int64
   fileReader     io.Reader
@@ -43,19 +40,18 @@ type scriptExecutor struct {
   proxyHost      string
 }
 
-func newCommandExecutor(args []string, port int, clientConfig *ssh.ClientConfig, sudo bool, agent agent.Agent, user, proxyHost string) (*commandExecutor) {
+func newCommandExecutor(args []string, port int, clientConfig *ssh.ClientConfig, sudo bool, user, proxyHost string) (*commandExecutor) {
   return &commandExecutor{
     port:         port,
     clientConfig: clientConfig,
     sudo:         sudo,
-    agent:        agent,
     user:         user,
     commands:     args,
     proxyHost:    proxyHost,
   }
 }
 
-func newScriptExecutor(arg string, port int, clientConfig *ssh.ClientConfig, sudo bool, agent agent.Agent, user, proxyHost string) (*scriptExecutor, error) {
+func newScriptExecutor(arg string, port int, clientConfig *ssh.ClientConfig, sudo bool, user, proxyHost string) (*scriptExecutor, error) {
 
   var (
     cmd string
@@ -103,7 +99,6 @@ func newScriptExecutor(arg string, port int, clientConfig *ssh.ClientConfig, sud
     port:          port,
     clientConfig:  clientConfig,
     sudo:          sudo,
-    agent:         agent,
     user:          user,
     fileSize:      s.Size(),
     fileReader:    bytes.NewBuffer(buf),
