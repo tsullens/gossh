@@ -1,18 +1,14 @@
-package gosshclient
+package gossh
 
 import (
   "golang.org/x/crypto/ssh"
   "golang.org/x/crypto/ssh/agent"
   "golang.org/x/crypto/ssh/knownhosts"
-  "golang.org/x/crypto/ssh/terminal"
   "runtime"
   "fmt"
   "os"
   "time"
-  "syscall"
   "strings"
-  "io/ioutil"
-  "net"
 )
 
 const TERM_CYAN = "\x1b[0;36m"
@@ -34,8 +30,8 @@ type GosshClient struct {
 
 func NewGosshClient(servers ServerList) (*GosshClient) {
   return &GosshClient{
-    serverList: servers,
-    routines:   runtime.NumCPU(),
+    serverList:   servers,
+    routines:     runtime.NumCPU(),
     port:         22,
     sudo:         false,
     agent:        nil,
@@ -43,6 +39,8 @@ func NewGosshClient(servers ServerList) (*GosshClient) {
   }
 }
 // Provide a custom SSH ClientConfig to use.
+// By default the client sets up a typical SSH configuration, but if a custom
+// one is provided via this func the Client will use that.
 func (c *GosshClient) ClientConfig(conf *ssh.ClientConfig) (*GosshClient) {
   c.clientConfig = conf
   return c
@@ -73,7 +71,12 @@ func (c *GosshClient) Port(p int) (*GosshClient) {
   return c
 }
 // Use provided proxy config for SSH connections
+// host can be in the form host:port, and if not we will assume port 22 to be used.
 func (c *GosshClient) ProxyHost(host string) (*GosshClient) {
+  _h := strings.SplitN(host, ":", 2)
+  if len(_h) == 1 {
+    host = fmt.Sprintf("%s:%d", host, 22)
+  }
   c.proxyHost = host
   return c
 }
@@ -83,7 +86,7 @@ func (client *GosshClient) ExecuteCommands(commands []string) ([]*ClientResponse
   if err != nil {
     return nil, err
   }
-  client.handler = newCommandExecutor(commands, client.port, client.clientConfig, client.sudo, client.user, client.proxyHost)
+  client.handler = newCommandExecutor(commands, client.port, client.clientConfig, client.sudo, client.proxyHost)
   return client.execute()
 }
 
@@ -93,7 +96,7 @@ func (client *GosshClient) ExecuteScript(scriptArg string) ([]*ClientResponse, e
   if err != nil {
     return nil, err
   }
-  client.handler, err = newScriptExecutor(scriptArg, client.port, client.clientConfig, client.sudo, client.user, client.proxyHost)
+  client.handler, err = newScriptExecutor(scriptArg, client.port, client.clientConfig, client.sudo, client.proxyHost)
   if err != nil {
     return nil, err
   }
@@ -139,27 +142,9 @@ func (client *GosshClient) initClientConfig() (error) {
   if err != nil {
     return err
   }
-  if client.agent == nil {
-    agent, err := sshAgent()
-    if err != nil {
-      return err
-    }
-    client.agent = agent
-  }
-  sshAuthMethods := make([]ssh.AuthMethod, 0)
+  sshAuthMethods := []ssh.AuthMethod{AgentAuth(), PublicKeyAuth(), PasswordAuth()}
   if client.agent != nil {
     sshAuthMethods = append(sshAuthMethods, ssh.PublicKeysCallback(client.agent.Signers))
-  }
-  signer, err := getPrivateKey(fmt.Sprintf("%s/.ssh/id_rsa", os.Getenv("HOME")))
-  if signer != nil {
-    sshAuthMethods = append(sshAuthMethods, ssh.PublicKeys(signer))
-  } else {
-    // No id_rsa found, force use of password Auth
-    password, err := passwordPrompt()
-    if err != nil {
-      return err
-    }
-    sshAuthMethods = append(sshAuthMethods, ssh.PasswordCallback(passwordCallback(password)))
   }
   client.clientConfig = &ssh.ClientConfig{
     User:             client.user,
@@ -168,66 +153,4 @@ func (client *GosshClient) initClientConfig() (error) {
     Timeout:          time.Duration(int64(time.Second * 20)),
   }
   return nil
-}
-
-type ClientResponse struct {
-  Host          string
-  ResponseData  string
-}
-
-func (cr *ClientResponse) String() (string) {
-  return fmt.Sprintf("Host: %s%s%s\r%s\n--------------------------------", TERM_GREEN, cr.Host, TERM_CLEAR, cr.ResponseData)
-}
-
-func (cr *ClientResponse) addResponseData(data string) {
-  cr.ResponseData = fmt.Sprintf("%s\n%s", cr.ResponseData, data)
-}
-
-/*
-  Custom type to represent a list of servers.
-  This is intended to get more complex as I add the ability to provide
-  regexes, etc.
-*/
-type ServerList []string
-func NewServerList(arg string) (ServerList, error) {
-  return strings.Split(arg, ","), nil
-}
-
-func passwordPrompt() (string, error) {
-  fmt.Print("Password: ")
-  password, err := terminal.ReadPassword(int(syscall.Stdin))
-  fmt.Println()
-  if err != nil {
-    return "", err
-  }
-  return strings.TrimSpace(string(password)), nil
-}
-// Callback Method: returns a func to be used in a Callback.
-func passwordCallback(password string) (func() (string, error)) {
-  return func() (string, error) {
-    return password, nil
-  }
-}
-
-// This is kinda a hacky method right now. There's two cases we want to use this:
-// 1. To check if an id_rsa exists & is usable: we don't want to Fatal
-// 2. If a specific keyfile is passed as an arg we want to Fatal if we can't use it.
-func getPrivateKey(identityFile string) (ssh.Signer, error) {
-  key, err := ioutil.ReadFile(identityFile)
-  if err != nil {
-    return nil, err
-  }
-  signer, err := ssh.ParsePrivateKey(key)
-  if err != nil {
-    return nil, err
-  }
-  return signer, nil
-}
-
-func sshAgent() (agent.Agent, error) {
-  authSock, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
-  if err != nil {
-    return nil, err
-  }
-  return agent.NewClient(authSock), nil
 }
