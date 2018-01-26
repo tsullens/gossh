@@ -1,296 +1,158 @@
 package main
-
 import (
+  "gossh/gossh"
+  "github.com/spf13/viper"
   flag "github.com/spf13/pflag"
-  "golang.org/x/crypto/ssh/terminal"
   "golang.org/x/crypto/ssh"
   "golang.org/x/crypto/ssh/knownhosts"
-  "time"
-  "sync"
-  "io/ioutil"
-  "strings"
-  "fmt"
-  "os"
-  "log"
-  "syscall"
   "runtime"
+  "log"
+  "os"
+  "fmt"
+  "time"
 )
 
-type ExecutionConfig struct {
-  Handler           Executor
-  NumProcs          int
-  ServerList        ServerList
-  SSHPort           int
-  SSHClientConfig   *ssh.ClientConfig
-  Sudo              bool
-  Verbose           bool
-  ComChannel        *ExecutorCom
-}
-
-func (c *ExecutionConfig) logVerbose(msg string) {
-  if c.Verbose {
-    fmt.Println(msg)
-  }
-}
-
-/*
-  Custom type to represent a list of servers.
-  This is intended to get more complex as I add the ability to provide
-  regexes, etc.
-*/
-type ServerList []string
-func NewServerList(arg string) (ServerList, error) {
-  return strings.Split(arg, ","), nil
-}
-
-const VERSION = "0.0.2"
-const TERM_CYAN = "\x1b[0;36m"
-const TERM_GREEN = "\x1b[0;32m"
-const TERM_YELLOW = "\x1b[0;33m"
-const TERM_CLEAR = "\033[0m"
-
-var (
- Config *ExecutionConfig
-)
+const VERSION = "0.4.1"
 
 func main() {
-  load()
-  //fmt.Printf("%+v\n", Config)
-
-  execute()
-}
-
-func execute() {
-
-  var results []ExecutorResponse
-  var wg sync.WaitGroup
-  var threads = Config.NumProcs
-  if len(Config.ServerList) < Config.NumProcs {
-    threads = len(Config.ServerList)
-  }
-  if Config.Verbose {
-    fmt.Printf("Running with %d goroutines\n", threads)
-  }
-  wg.Add(threads)
-  for i := 0; i < threads; i++ {
-    go Config.Handler.Run(wg)
-  }
-
-  go func() {
-    for _, host := range Config.ServerList {
-      Config.ComChannel.JobChannel <- host
-    }
-    close(Config.ComChannel.JobChannel)
-  }()
-
-  // Really don't know that this is the idiomatic way to do this.
-  // Maybe need to think of a better way to handle this whole section of code
-  for i := 0; i < len(Config.ServerList); i++ {
-    select {
-    case result := <- Config.ComChannel.ResponseChannel:
-      results = append(results, result)
-    }
-  }
-  //wg.Wait()
-  for _, result := range results {
-    fmt.Printf("Host: %s%s%s", TERM_GREEN, result.Host, TERM_CLEAR)
-    fmt.Printf("%s\n", result.ResponseData)
-    fmt.Printf("--------------------------------\n")
-  }
-}
-
-func load() {
-
   var (
-    executor             Executor
-    servers              ServerList
+    servers              gossh.ServerList
     err                  error
     hostKeyCallback      ssh.HostKeyCallback
-    flagHelp             bool
-    flagUser             string
-    flagIdentityFile     string
-    flagSudo             bool
-    flagVerbose          bool
-    flagScript           string
-    flagPort             int
-    flagProcs            int
-    flagVersion          bool
-    flagKnownHostsFile   string
-    flagStrictHostCheck  bool
+    proxyHostFlag        string
+    helpFlag             bool
+    userFlag             string
+    passwordFlag         bool
+    identityFileFlag     string
+    sudoFlag             bool
+    //verboseFlag          bool
+    scriptFlag           string
+    portFlag             int
+    procsFlag            int
+    versionFlag          bool
+    knownHostsFileFlag   string
+    strictHostCheckFlag  bool
+    sshAgentForwardFlag  bool
   )
 
-  flag.BoolVarP(&flagHelp, "help", "h", false, "Print Help / Usage")
-  flag.StringVarP(&flagUser, "user", "u", os.Getenv("USER"), "Username for SSH connection. Required only if the SSH user differs from the ENV(\"USER\") value or if it is empty.")
-  flag.StringVarP(&flagIdentityFile, "IdentityFile", "i", "", "Private Key file for SSH connection. Required only if an SSH Key other than ~/.ssh/id_rsa is to be used. Password fallback is enabled.")
-  flag.StringVar(&flagKnownHostsFile, "KnownHostsFile", fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME")), "Location of known_hosts file.")
-  flag.BoolVar(&flagStrictHostCheck, "NoStrictHostCheck", false, "Disable Host Key Checking. Insecure.")
-  flag.BoolVarP(&flagSudo, "sudo", "s", false, "Use sudo for command execution. Optional.")
-  flag.BoolVarP(&flagVerbose, "verbose", "v", false, "Display verbose output. Optional.")
-  flag.StringVarP(&flagScript, "script", "S", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
-  flag.IntVarP(&flagPort, "port", "p", 22, "Port for SSH connection. Optional.")
-  flag.IntVar(&flagProcs, "procs", runtime.NumCPU(), "Number of goroutines to use. Optional. This value reflects the number of goroutines concurrently executing SSH Sessions, by default the NumCPUs is used.")
-  flag.BoolVarP(&flagVersion, "version", "V", false, "Print version")
-  flag.Parse()
+  viper := viper.New()
+  /*
+    Trying to load our gossh config file
 
-  if flagHelp {
-    usage(0)
+  viper.SetConfigName("config")
+  viper.AddConfigPath("$HOME/.gossh/")
+  viper.SetConfigType("toml")
+  err = viper.ReadInConfig()
+  if err != nil {
+    fmt.Println(err)
   }
-  if flagVersion {
+  */
+  flagSet := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+  flagSet.BoolVarP(&helpFlag, "help", "h", false, "Print Help / Usage")
+  flagSet.StringVarP(&userFlag, "user", "l", os.Getenv("USER"), "Username for SSH connection. Required only if the SSH user differs from the ENV(\"USER\") value or if it is empty.")
+  flagSet.BoolVarP(&passwordFlag, "pass", "P", false, "Use password authentication for the SSH connection.")
+  flagSet.StringVarP(&identityFileFlag, "IdentityFile", "i", fmt.Sprintf("%s/.ssh/id_rsa", os.Getenv("HOME")), "Private Key file for SSH connection. Required only if an SSH Key other than ~/.ssh/id_rsa is to be used. Password fallback is enabled.")
+  flagSet.BoolVarP(&sudoFlag, "sudo", "s", false, "Use sudo for command execution. Optional.")
+  //flagSet.BoolVarP(&verboseFlag, "verbose", "v", false, "Display verbose output. Optional.")
+  flagSet.StringVarP(&scriptFlag, "script", "S", "", "Path to script file to run on remote machines. Optional, however this or a list of commands is required.")
+  flagSet.IntVarP(&portFlag, "port", "p", 22, "Port for SSH connection. Optional.")
+  flagSet.StringVarP(&proxyHostFlag, "proxy", "J", "", "Bastion / Jumphost to proxy through, in the form of host:port. If no port is supplied, 22 is assumed.")
+  flagSet.IntVar(&procsFlag, "procs", runtime.NumCPU(), "Number of goroutines to use. Optional. This value is the number of concurrently executing SSH Sessions, by default the NumCPUs is used.")
+  flagSet.BoolVarP(&versionFlag, "version", "v", false, "Print version")
+  flagSet.BoolVarP(&sshAgentForwardFlag, "forward", "A", false, "Forward SSH Key from local ssh-agent.")
+  flagSet.StringVar(&knownHostsFileFlag, "KnownHostsFile", fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME")), "Location of known_hosts file.")
+  flagSet.BoolVar(&strictHostCheckFlag, "NoStrictHostCheck", false, "Disable Host Key Checking. Insecure.")
+  //flagSet.MarkHidden("A")
+  flagSet.SortFlags = false
+  flagSet.Parse(os.Args[1:])
+  viper.BindPFlags(flag.CommandLine)
+
+  if helpFlag {
+    usage(flagSet, 0)
+  }
+  if versionFlag {
     fmt.Println(VERSION)
     os.Exit(0)
   }
-  // Setting our User
-  if flagUser == "" {
-    usage(1, "Username required.")
-  }
-  if len(flag.Args()) < 1 {
-    usage(2, "At least one argument (host) is required.")
+
+  if len(flagSet.Args()) < 1 {
+    usage(flagSet, 2, "At least one argument (host) is required.")
   } else {
-    servers, err = NewServerList(flag.Arg(0))
+    servers, err = gossh.NewServerList(flagSet.Arg(0))
     if err != nil {
-      usage(3, "Server list could not be parsed.")
+      usage(flagSet, 3, fmt.Sprintf("Server list could not be parsed: %s", err.Error()))
     }
   }
-
-  executorComChannel := &ExecutorCom{
-    JobChannel:        make(chan string, 100),
-    ResponseChannel:   make(chan ExecutorResponse, 100),
+  gclient := gossh.NewGosshClient(servers).Port(portFlag)
+  if proxyHostFlag != "" {
+    gclient.ProxyHost(proxyHostFlag)
+  }
+  if sudoFlag {
+    gclient.Sudo()
   }
 
-  if flagScript != "" {
-    executor, err = NewScriptExecutor(flagScript, executorComChannel)
-    if err != nil {
-      log.Fatal("Could not create ScriptExecutor: ", err)
-    }
-  } else if len(flag.Args()[1:]) > 0 {
-    executor = NewCommandExecutor(flag.Args()[1:], executorComChannel)
+  /*
+    This sets the number of go routines we will use for parallel execution.
+    A -1 provided for this flag will have us create an Executor for every server,
+    or if the amount of servers given is lower than our provided or default procsFlag
+    value, we will limit ourselves so as to not create unnecessary threads.
+  */
+  if procsFlag == -1 || len(servers) < procsFlag {
+    gclient.Routines(len(servers))
   } else {
-    usage(3, "No script or commands provided.")
+    gclient.Routines(procsFlag)
   }
+
   // Unless explicity stated via the flag, we should check Host Keys against known_hosts.
-  if flagStrictHostCheck {
+  if strictHostCheckFlag {
     hostKeyCallback = ssh.InsecureIgnoreHostKey()
   } else {
-    hostKeyCallback, err = knownhosts.New(fmt.Sprintf(flagKnownHostsFile))
+    hostKeyCallback, err = knownhosts.New(fmt.Sprintf(knownHostsFileFlag))
     if err != nil {
       log.Fatal("Could not parse known_hosts file: ", err)
     }
   }
 
-  sshClientConfig := &ssh.ClientConfig{
-    User:             flagUser,
+  sshAuthMethods := []ssh.AuthMethod{gossh.PublicKeyAuth(identityFileFlag)}
+  if sshAgentForwardFlag {
+    sshAuthMethods = append(sshAuthMethods, gossh.AgentAuth())
+  }
+  if passwordFlag {
+    sshAuthMethods = append(sshAuthMethods, gossh.PasswordAuth())
+  }
+
+  sshClientConfig := ssh.ClientConfig{
+    User:             userFlag,
+    Auth:             sshAuthMethods,
     HostKeyCallback:  hostKeyCallback,
     Timeout:          time.Duration(int64(time.Second * 20)),
   }
+  gclient.ClientConfig(sshClientConfig)
 
-  // Let's work out our Authentication Method
-  if flagIdentityFile != "" { // We've been provided a specific keyfile argument
-    sshClientConfig.Auth = []ssh.AuthMethod{
-      ssh.PublicKeys(getPrivateKey(flagIdentityFile, true)),
-    }
-  } else { // No specific file was given, let's see if we can find an id_rsa
-    signer := getPrivateKey(fmt.Sprintf("%s/.ssh/id_rsa", os.Getenv("HOME")), false)
-    if signer != nil {
-      sshClientConfig.Auth = []ssh.AuthMethod{
-        ssh.PublicKeys(signer),
-      }
-    } else { // No id_rsa found, not keyfile arg, use password Auth
-      password, err := passwordPrompt()
-      if err != nil {
-        log.Fatal("Could not read password: ", err)
-      }
-      sshClientConfig.Auth = []ssh.AuthMethod{
-        ssh.PasswordCallback(passwordCallback(password)),
-      }
+  var results []*gossh.ClientResponse
+  if scriptFlag != "" {
+    results, err = gclient.ExecuteScript(scriptFlag)
+  } else if len(flagSet.Args()[1:]) > 0 {
+    results, err = gclient.ExecuteCommands(flagSet.Args()[1:])
+  } else {
+    usage(flagSet, 3, "No script or commands provided.")
+  }
+  if err != nil {
+    log.Fatal("Error: ", err)
+  } else {
+    for _, res := range results {
+      fmt.Println(res.String())
     }
   }
-
-  // Setting our full ExecutionConfig
-  Config = &ExecutionConfig{
-    Handler:          executor,
-    NumProcs:         flagProcs,
-    ServerList:       servers,
-    SSHPort:          flagPort,
-    SSHClientConfig:  sshClientConfig,
-    Sudo:             flagSudo,
-    Verbose:          flagVerbose,
-    ComChannel:       executorComChannel,
-  }
-
 }
 
-func usage(exitstatus int, msg ...string) {
+func usage(flagSet *flag.FlagSet, exitstatus int, msg ...string) {
   if len(msg) > 0 {
     fmt.Println(msg[0]) // We should only ever provide 1 extra arg to this function
   }
   // https://godoc.org/github.com/spf13/pflag#pkg-variables
-  flag.PrintDefaults()
+  fmt.Println("gossh [flags...] server[,server] \"command\"")
+  fmt.Println()
+  flagSet.PrintDefaults()
   os.Exit(exitstatus)
 }
-
-func passwordPrompt() (string, error) {
-  fmt.Print("Password: ")
-  password, err := terminal.ReadPassword(int(syscall.Stdin))
-  fmt.Println()
-  if err != nil {
-    return "", err
-  }
-  return strings.TrimSpace(string(password)), nil
-}
-// Callback Method: returns a func to be used in a Callback.
-func passwordCallback(password string) (func() (string, error)) {
-  return func() (string, error) {
-    return password, nil
-  }
-}
-
-// This is kinda a hacky method right now. There's two cases we want to use this:
-// 1. To check if an id_rsa exists & is usable: we don't want to Fatal
-// 2. If a specific keyfile is passed as an arg we want to Fatal if we can't use it.
-func getPrivateKey(identityFile string, failOnErr bool) (ssh.Signer) {
-  key, err := ioutil.ReadFile(identityFile)
-  if err != nil {
-    if failOnErr {
-      log.Fatal("Could not read Identity File: ", err)
-    }
-    return nil
-  }
-  signer, err := ssh.ParsePrivateKey(key)
-  if err != nil {
-    log.Fatal("Could not parse private key: ", err)
-  }
-  return signer
-}
-
-func getScriptSrc(scriptPath string) ([]byte) {
-  if scriptPath == "" {
-    return nil
-  }
-  scriptSrc, err := ioutil.ReadFile(scriptPath)
-  if err != nil {
-    log.Fatal("Could not read script: ", err)
-  }
-  return scriptSrc
-}
-
-func (ec *ExecutionConfig) Print() {
-  // Print the Exection Context in a readable format
-  //fmt.Printf("ExectionContext:\n")
-  //fmt.Printf("ServerIp: %s\n", ec.ServerIp)
-  //fmt.Printf("SSHPort: %d\n", ec.SSHPort)
-  //fmt.Printf("Commands: %s\n", strings.Join(ec.Commands, ", "))
-  //fmt.Printf("")
-}
-
-/*
-  Probably want to try to implement the ability to enforce Host Key Checking
-  by default at some point. For now, I think I'll just have to be Insecure.
-
-// Type HostKeyCallback
-// https://godoc.org/golang.org/x/crypto/ssh#HostKeyCallback
-func LookupHostKey() HostKeyCallBack {
-  return func(hostname string, remote net.Addr, key PublicKey) error {
-
-  }
-}
-*/
