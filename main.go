@@ -121,7 +121,7 @@ func main() {
     sshAuthMethods = append(sshAuthMethods, gossh.PasswordAuth())
   }
 
-  sshClientConfig := &ssh.ClientConfig{
+  sshClientConfig := ssh.ClientConfig{
     User:             userFlag,
     Auth:             sshAuthMethods,
     HostKeyCallback:  hostKeyCallback,
@@ -151,6 +151,8 @@ func usage(flagSet *flag.FlagSet, exitstatus int, msg ...string) {
     fmt.Println(msg[0]) // We should only ever provide 1 extra arg to this function
   }
   // https://godoc.org/github.com/spf13/pflag#pkg-variables
+  fmt.Println("gossh [flags...] server[,server] \"command\"")
+  fmt.Println()
   flagSet.PrintDefaults()
   os.Exit(exitstatus)
 }
