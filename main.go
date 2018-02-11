@@ -85,7 +85,7 @@ func main() {
 			usage(flagSet, 3, fmt.Sprintf("Server list could not be parsed: %s", err.Error()))
 		}
 	}
-	gclient := gossh.NewGosshClient(servers).Port(portFlag)
+	gclient := gossh.NewClient(servers).Port(portFlag)
 	if proxyHostFlag != "" {
 		gclient.ProxyHost(proxyHostFlag)
 	}
