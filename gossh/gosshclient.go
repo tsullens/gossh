@@ -5,165 +5,177 @@
 package gossh
 
 import (
-  "golang.org/x/crypto/ssh"
-  "golang.org/x/crypto/ssh/agent"
-  "golang.org/x/crypto/ssh/knownhosts"
-  "runtime"
-  "fmt"
-  "os"
-  "time"
-  "strings"
+	"fmt"
+	"os"
+	"runtime"
+	"strings"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 const (
-  TERM_CYAN = "\x1b[0;36m"    // Terminal coloring for response output
-  TERM_GREEN = "\x1b[0;32m"
-  TERM_YELLOW = "\x1b[0;33m"
-  TERM_CLEAR = "\033[0m"
-  REMOTE_SCRIPT_DIR = "/tmp"  // Directory on remote servers to copy a script to
+	termCyan        = "\x1b[0;36m"
+	termGreen       = "\x1b[0;32m"
+	termYellow      = "\x1b[0;33m"
+	termClear       = "\033[0m"
+	remoteScriptDir = "/tmp"
 )
 
-type GosshClient struct {
-  handler        executor
-  serverList     ServerList
-  port           int
-  routines       int
-  clientConfig   *ssh.ClientConfig
-  sudo           bool
-  agent          agent.Agent
-  user           string
-  proxyHost      string
+// A Client represents the parallel execution process.
+type Client struct {
+	handler      executor
+	serverList   ServerList
+	port         int
+	routines     int
+	clientConfig *ssh.ClientConfig
+	sudo         bool
+	agent        agent.Agent
+	user         string
+	proxyHost    string
 }
 
-// Creates a default GosshClient.
-// Functions are provided to customize the GosshClient, and are allowed to be chained.
-func NewGosshClient(servers ServerList) (*GosshClient) {
-  return &GosshClient{
-    serverList:   servers,
-    port:         22,
-    routines:     runtime.NumCPU(),
-    sudo:         false,
-    agent:        nil,
-  }
+// NewClient creates a new Client object.
+// Functions are provided to customize the Client, and are allowed to be chained.
+func NewClient(servers ServerList) *Client {
+	return &Client{
+		serverList: servers,
+		port:       22,
+		routines:   runtime.NumCPU(),
+		sudo:       false,
+		agent:      nil,
+	}
 }
-// Provide a custom SSH ClientConfig to use.
+
+// ClientConfig allows a custom ssh.ClientConfig to be provided.
 // By default the client sets up a typical SSH configuration, but if a custom
 // one is provided via this func the Client will use that.
-// We pass by value here so that the ClientConfig stays internal to the GosshClient
-func (c *GosshClient) ClientConfig(conf ssh.ClientConfig) (*GosshClient) {
-  c.clientConfig = &conf
-  return c
+// We pass by value here so that the ClientConfig stays internal to the Client
+func (c *Client) ClientConfig(conf ssh.ClientConfig) *Client {
+	c.clientConfig = &conf
+	return c
 }
-// Provide a custom SSH agent to use.
+
+// Agent allows a custom agent.Agent to be provided.
 // This will only be used if a custom ssh.ClientConfig is not provided.
-func (c *GosshClient) Agent(agent agent.Agent) {
-  c.agent = agent
+func (c *Client) Agent(agent agent.Agent) {
+	c.agent = agent
 }
-// Execute commands with sudo on remote servers.
+
+// Sudo sets the Client to run sudo during execution.
 // Default is false.
-func (c *GosshClient) Sudo() (*GosshClient) {
-  c.sudo = true
-  return c
+func (c *Client) Sudo() *Client {
+	c.sudo = true
+	return c
 }
-// Number of parallel routines to use (i.e. thread pool).
+
+// Routines specifies the number of executions to run in parallel.
 // Default is the number of processors at runtime.
-func (c *GosshClient) Routines(num int) (*GosshClient) {
-  c.routines = num
-  return c
+func (c *Client) Routines(num int) *Client {
+	c.routines = num
+	return c
 }
-// Specify user to connect as.
+
+// User specifies the user to connect as.
 // Default is to use current user.
-func (c *GosshClient) User(u string) (*GosshClient) {
-  c.user = u
-  return c
+func (c *Client) User(u string) *Client {
+	c.user = u
+	return c
 }
-// Specify port to use for host connections.
+
+// Port specifies the port to connect to.
+// Is used for all servers.
 // Default is 22.
-func (c *GosshClient) Port(p int) (*GosshClient) {
-  c.port = p
-  return c
+func (c *Client) Port(p int) *Client {
+	c.port = p
+	return c
 }
-// Use provided proxy config for SSH connections.
+
+// ProxyHost specifies a proxy/jump host to connect through for all servers.
 // host can be in the form host:port, and if not we will assume port 22 to be used.
-func (c *GosshClient) ProxyHost(host string) (*GosshClient) {
-  _h := strings.SplitN(host, ":", 2)
-  if len(_h) == 1 {
-    host = fmt.Sprintf("%s:%d", host, 22)
-  }
-  c.proxyHost = host
-  return c
+func (c *Client) ProxyHost(host string) *Client {
+	_h := strings.SplitN(host, ":", 2)
+	if len(_h) == 1 {
+		host = fmt.Sprintf("%s:%d", host, 22)
+	}
+	c.proxyHost = host
+	return c
 }
 
-// Execute the array of commands against our hosts.
-func (c *GosshClient) ExecuteCommands(commands []string) ([]*ClientResponse, error) {
-  err := c.initClientConfig()
-  if err != nil {
-    return nil, err
-  }
-  c.handler = newCommandExecutor(commands, c.clientConfig, c.sudo, c.proxyHost)
-  return c.execute()
+// ExecuteCommands has the Client execute the given commands on all servers.
+// Returns an []*ClientResponse containing response data from all servers.
+func (c *Client) ExecuteCommands(commands []string) ([]*ClientResponse, error) {
+	err := c.initClientConfig()
+	if err != nil {
+		return nil, err
+	}
+	c.handler = newCommandExecutor(commands, c.clientConfig, c.sudo, c.proxyHost)
+	return c.execute()
 }
 
-// Execute a script, full path provided as a string argument, on all hosts.
-func (c *GosshClient) ExecuteScript(scriptArg string) ([]*ClientResponse, error) {
-  var err error
-  err = c.initClientConfig()
-  if err != nil {
-    return nil, err
-  }
-  c.handler, err = newScriptExecutor(scriptArg, c.clientConfig, c.sudo, c.proxyHost)
-  if err != nil {
-    return nil, err
-  }
-  return c.execute()
+// ExecuteScript has the Client execute the given script, provided as a string on all servers.
+// Returns an []*ClientResponse containing response data from all servers.
+func (c *Client) ExecuteScript(scriptArg string) ([]*ClientResponse, error) {
+	var err error
+	err = c.initClientConfig()
+	if err != nil {
+		return nil, err
+	}
+	c.handler, err = newScriptExecutor(scriptArg, c.clientConfig, c.sudo, c.proxyHost)
+	if err != nil {
+		return nil, err
+	}
+	return c.execute()
 }
 
-func (c *GosshClient) execute() ([]*ClientResponse, error) {
+func (c *Client) execute() ([]*ClientResponse, error) {
 
-  var results []*ClientResponse
+	var results []*ClientResponse
 
-  serverChan := make(chan string, len(c.serverList))
-  responseChan := make(chan *ClientResponse, len(c.serverList))
-  for i := 0; i < c.routines; i++ {
-    go c.handler.run(serverChan, responseChan)
-  }
-  go func() {
-    for _, host := range c.serverList {
-      serverChan <- fmt.Sprintf("%s:%d", host, c.port)
-    }
-    close(serverChan)
-  }()
+	serverChan := make(chan string, len(c.serverList))
+	responseChan := make(chan *ClientResponse, len(c.serverList))
+	for i := 0; i < c.routines; i++ {
+		go c.handler.run(serverChan, responseChan)
+	}
+	go func() {
+		for _, host := range c.serverList {
+			serverChan <- fmt.Sprintf("%s:%d", host, c.port)
+		}
+		close(serverChan)
+	}()
 
-  // Really don't know that this is the idiomatic way to do this.
-  // Maybe need to think of a better way to handle this whole section of code
-  for i := 0; i < len(c.serverList); i++ {
-    select {
-    case result := <- responseChan:
-      results = append(results, result)
-    }
-  }
-  return results, nil
+	// Really don't know that this is the idiomatic way to do this.
+	// Maybe need to think of a better way to handle this whole section of code
+	for i := 0; i < len(c.serverList); i++ {
+		select {
+		case result := <-responseChan:
+			results = append(results, result)
+		}
+	}
+	return results, nil
 }
 
 // "Execution-time" loading of SSH config, if one hasn't been provided for us.
-func (c *GosshClient) initClientConfig() (error) {
-  if c.clientConfig != nil {
-    // ssh.CLientConfig has been provided for us
-    return nil
-  }
-  hostKeyCallback, err := knownhosts.New(fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME")))
-  if err != nil {
-    return err
-  }
-  sshAuthMethods := []ssh.AuthMethod{AgentAuth(), PublicKeyAuth(), PasswordAuth()}
-  if c.agent != nil {
-    sshAuthMethods = append(sshAuthMethods, ssh.PublicKeysCallback(c.agent.Signers))
-  }
-  c.clientConfig = &ssh.ClientConfig{
-    User:             c.user,
-    Auth:             sshAuthMethods,
-    HostKeyCallback:  hostKeyCallback,
-    Timeout:          time.Duration(int64(time.Second * 20)),
-  }
-  return nil
+func (c *Client) initClientConfig() error {
+	if c.clientConfig != nil {
+		// ssh.CLientConfig has been provided for us
+		return nil
+	}
+	hostKeyCallback, err := knownhosts.New(fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME")))
+	if err != nil {
+		return err
+	}
+	sshAuthMethods := []ssh.AuthMethod{AgentAuth(), PublicKeyAuth(), PasswordAuth()}
+	if c.agent != nil {
+		sshAuthMethods = append(sshAuthMethods, ssh.PublicKeysCallback(c.agent.Signers))
+	}
+	c.clientConfig = &ssh.ClientConfig{
+		User:            c.user,
+		Auth:            sshAuthMethods,
+		HostKeyCallback: hostKeyCallback,
+		Timeout:         time.Duration(int64(time.Second * 20)),
+	}
+	return nil
 }
